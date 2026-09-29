@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ product.name }} — Card Price Lookup</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="wrap">
+    <a class="back-link top" href="/">&larr; New search</a>
+    {% if search_note %}<div class="notice">{{ search_note }}</div>{% endif %}
+
+    <div class="card-header">
+      <img src="{{ product.image_url }}" alt="{{ product.name }}" onerror="this.style.visibility='hidden'">
+      <div class="meta">
+        <h2>{{ product.name }}{% if product.number %} — #{{ product.number }}{% endif %}</h2>
+        <div class="set">{{ product.set_name }}</div>
+        <a href="{{ product.url }}" target="_blank" rel="noopener">View on TCGPlayer &rarr;</a>
+      </div>
+    </div>
+
+    {% if printing_filter or (available_printings and available_printings|length > 1) %}
+      <div class="error" style="background:#1d2a3a; border-color:#2b4a6b; color:#bcd9f5;">
+        {% if available_printings and available_printings|length > 1 %}
+          This card has multiple printings: {{ available_printings|join(', ') }}.
+        {% endif %}
+        {% if printing_filter %}
+          Showing only <strong>{{ printing_filter }}</strong> listings and sales.
+        {% else %}
+          Prices below mix all of them together — pick a printing on the
+          <a href="/" style="color:#f4b942;">search page</a> to separate them.
+        {% endif %}
+      </div>
+    {% endif %}
+
+    <h3 class="section-title">Lowest current listing (price + shipping)</h3>
+    <table>
+      <thead>
+        <tr><th>Condition</th><th>Total</th><th>Price</th><th>Shipping</th></tr>
+      </thead>
+      <tbody>
+        {% for condition in condition_order %}
+          {% set l = listings.get(condition) %}
+          <tr>
+            <td>{{ condition }}</td>
+            {% if l %}
+              <td class="total">${{ "%.2f"|format(l.lowest_total) }}</td>
+              <td>${{ "%.2f"|format(l.price) }}</td>
+              <td>${{ "%.2f"|format(l.shipping) }}</td>
+            {% else %}
+              <td class="none" colspan="3">No live listings</td>
+            {% endif %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h3 class="section-title">Recent sales</h3>
+    {% set ns = namespace(any_sales=false) %}
+    {% for condition in condition_order %}
+      {% set s = sales.get(condition) %}
+      {% if s %}
+        {% set ns.any_sales = true %}
+        <div class="sales-block">
+          <h4>{{ condition }}</h4>
+          <table>
+            <thead>
+              <tr><th>Date</th><th>Total</th><th>Price</th><th>Shipping</th></tr>
+            </thead>
+            <tbody>
+              {% for sale in s %}
+                <tr>
+                  <td>{{ sale.date[:10] if sale.date else '—' }}</td>
+                  <td class="total">${{ "%.2f"|format(sale.total) }}</td>
+                  <td>${{ "%.2f"|format(sale.price) }}</td>
+                  <td>${{ "%.2f"|format(sale.shipping) }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    {% endfor %}
+    {% if not ns.any_sales %}
+      <p class="none">No recent sales data returned for this card.</p>
+    {% endif %}
+  </div>
+</body>
+</html>
