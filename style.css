@@ -6,6 +6,7 @@
   --muted: #9aa0ac;
   --accent: #f4b942;
   --accent-2: #4ade80;
+  --danger: #ff6b6b;
 }
 
 * { box-sizing: border-box; }
@@ -160,8 +161,38 @@ th {
 
 tr:last-child td { border-bottom: none; }
 
-.total { color: var(--accent-2); font-weight: 600; }
+.total-value { font-weight: 600; }
 .none { color: var(--muted); font-style: italic; }
+
+.info-icon {
+  display: inline-block;
+  margin-left: 4px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--border);
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-align: center;
+  line-height: 15px;
+  cursor: help;
+  vertical-align: middle;
+}
+
+.sales-stats {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 2px 0 8px 0;
+}
+.sales-stats strong { color: var(--text); }
+
+.diff-pos { color: var(--danger); font-size: 0.82rem; }
+.diff-neg { color: var(--accent-2); font-size: 0.82rem; }
+
+.recency-fresh { color: var(--accent-2); }
+.recency-month { color: var(--accent); }
+.recency-stale { color: var(--danger); }
 
 .sales-block { margin-bottom: 16px; }
 .sales-block h4 {
