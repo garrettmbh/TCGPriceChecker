@@ -47,7 +47,16 @@
           <tr>
             <td>{{ condition }}</td>
             {% if l %}
-              <td class="total-value">${{ "%.2f"|format(l.total) }}</td>
+              <td class="total-value">
+                ${{ "%.2f"|format(l.total) }}
+                {% if l.diff is not none %}
+                  {% if l.diff > 0 %}
+                    <span class="diff-pos">(+${{ "%.2f"|format(l.diff) }})</span>
+                  {% else %}
+                    <span class="diff-neg">({{ "-$%.2f"|format(-l.diff) if l.diff < 0 else "+$0.00" }})</span>
+                  {% endif %}
+                {% endif %}
+              </td>
               <td>${{ "%.2f"|format(l.cad) }}</td>
               <td>${{ "%.2f"|format(l.usd) }}</td>
             {% else %}
@@ -59,7 +68,7 @@
     </table>
 
     <h3 class="section-title">Recent sales
-      <span class="info-icon" tabindex="0" title="Weighted avg favors recent sales: each sale is weighted 1/(days since sale + 1). The (+/-$) beside each Total is that sale's Total compared to the weighted avg for its condition -- red means this sale was below the weighted avg, green means at or above it. Date color: green = within 1 month, yellow = 1-2 months, red = 2+ months.">?</span>
+      <span class="info-icon" tabindex="0" title="Weighted avg favors recent sales: each sale is weighted 1/(days since sale + 1). The (+/-$) beside the lowest current listing shows the difference between the weighted sales average and the current lowest listing for that condition. Positive means the current listing is below the weighted average; negative means it is above. Date color: green = within 1 month, yellow = 1-2 months, red = 2+ months.">?</span>
     </h3>
     {% set ns = namespace(any_sales=false) %}
     {% for condition in condition_order %}
@@ -95,11 +104,6 @@
                   <td class="{{ recency_class }}">{{ sale.date[:10] if sale.date else '—' }}</td>
                   <td class="total-value">
                     ${{ "%.2f"|format(sale.total) }}
-                    {% if sale.diff > 0 %}
-                      <span class="diff-pos">(+${{ "%.2f"|format(sale.diff) }})</span>
-                    {% else %}
-                      <span class="diff-neg">({{ "-$%.2f"|format(-sale.diff) if sale.diff < 0 else "+$0.00" }})</span>
-                    {% endif %}
                   </td>
                   <td>${{ "%.2f"|format(sale.cad) }}</td>
                   <td>${{ "%.2f"|format(sale.usd) }}</td>
