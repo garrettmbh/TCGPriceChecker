@@ -16,6 +16,7 @@ APP_USERNAME/APP_PASSWORD add a login prompt.
 
 import os
 import secrets
+import copy
 
 from flask import Flask, render_template, request, Response
 import pricing
@@ -60,12 +61,27 @@ import time
 def _get_cached_details(candidate, printing_filter=None):
     cache_key = (candidate["product_id"], printing_filter)
     now = time.time()
+
     cached = _details_cache.get(cache_key)
+
     if cached and (now - cached["ts"]) < CACHE_TTL_SECONDS:
-        return cached["data"]
-    data = tcg_scraper.get_card_details(candidate, printing_filter=printing_filter)
-    _details_cache[cache_key] = {"ts": now, "data": data}
-    return data
+        # Never give the presentation layer the object stored in the cache.
+        # pricing.enrich_sales() mutates the returned data.
+        return copy.deepcopy(cached["data"])
+
+    data = tcg_scraper.get_card_details(
+        candidate,
+        printing_filter=printing_filter,
+    )
+
+    # Store an untouched copy of the raw TCGPlayer data.
+    _details_cache[cache_key] = {
+        "ts": now,
+        "data": copy.deepcopy(data),
+    }
+
+    # Return a separate object that the pricing layer can safely mutate.
+    return copy.deepcopy(data)
 
 
 @app.route("/", methods=["GET"])

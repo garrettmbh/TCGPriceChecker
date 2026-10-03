@@ -80,7 +80,7 @@ def _unwrap_number(value):
 # unrelated note that happens to contain one of these tokens — tune the
 # list below if that turns out to be a problem in practice.
 FOREIGN_LANGUAGE_PATTERN = re.compile(
-    r"\b(japanese|japan|jpn|jap|jp|korean|korea|kor|kr|chinese|china|chn|cn|prc)\b",
+    r"\b(japanese|japan|jpn|jap|jp|korean|korea|kor|kr|chinese|china|chn|cn|prc|spanish|spain|italian)\b",
     re.IGNORECASE,
 )
 
@@ -534,11 +534,13 @@ def get_latest_sales(product_id, printing_filter=None, limit_per_condition=5):
         # guarding against here too.
         price = _unwrap_number(sale.get("purchasePrice", 0))
         shipping = _unwrap_number(sale.get("shippingPrice", 0))
+        usd_total = round(price + shipping, 2)
         by_condition[condition].append({
             "date": sale.get("orderDate", ""),
             "price": round(price, 2),
             "shipping": round(shipping, 2),
-            "total": round(price + shipping, 2),
+            "usd_total": usd_total,
+            "total": usd_total,
         })
     return by_condition
 

@@ -127,33 +127,66 @@ def enrich_listings(listings, rate=None):
 def enrich_sales(sales, rate=None):
     """
     Mutates the {condition: [sale, ...]} dict from tcg_scraper.get_latest_sales.
-    For each sale: adds usd/cad/days_ago, and overwrites "total" (previously
-    a USD-only figure) with the CAD+tax total. Also computes, per condition,
-    the weighted and simple averages of that Total figure, and attaches
-    each sale's diff from the weighted average: diff = weighted_avg - total.
+
+    For each sale, the original USD price + shipping is preserved in
+    "usd_total". The presentation fields are then calculated from that
+    immutable source value:
+
+      usd   - original USD price + shipping
+      cad   - USD converted to CAD
+      total - CAD total including NY sales tax
+
+    Also computes, per condition, the weighted and simple averages of the
+    CAD+tax Total figure, and attaches each sale's diff from the weighted
+    average.
 
     Returns (sales, stats) where stats is
     {condition: {"weighted_avg": float, "simple_avg": float} or None}.
     """
     if rate is None:
         rate = get_usd_to_cad_rate()
+
     stats = {}
+
     for condition, sale_list in sales.items():
         totals_with_days = []
+
         for sale in sale_list:
-            conv = usd_to_totals(sale["total"], rate)  # sale["total"] here is still USD (price+shipping)
+            # Always use the original USD value.
+            #
+            # The fallback to "total" keeps this compatible with any older
+            # cached/raw sale objects that don't yet have "usd_total".
+            usd_total = sale.get("usd_total", sale["total"])
+
+            # Preserve the raw USD source value permanently.
+            sale["usd_total"] = round(usd_total, 2)
+
+            conv = usd_to_totals(usd_total, rate)
+
             sale["usd"] = conv["usd"]
             sale["cad"] = conv["cad"]
             sale["total"] = conv["total"]
             sale["days_ago"] = days_since(sale.get("date"))
-            totals_with_days.append((sale["total"], sale["days_ago"]))
+
+            totals_with_days.append(
+                (sale["total"], sale["days_ago"])
+            )
 
         if totals_with_days:
             w_avg = weighted_average(totals_with_days)
             s_avg = simple_average([t for t, _ in totals_with_days])
-            stats[condition] = {"weighted_avg": round(w_avg, 2), "simple_avg": round(s_avg, 2)}
+
+            stats[condition] = {
+                "weighted_avg": round(w_avg, 2),
+                "simple_avg": round(s_avg, 2),
+            }
+
             for sale in sale_list:
-                sale["diff"] = round(w_avg - sale["total"], 2)
+                sale["diff"] = round(
+                    w_avg - sale["total"],
+                    2,
+                )
         else:
             stats[condition] = None
+
     return sales, stats
