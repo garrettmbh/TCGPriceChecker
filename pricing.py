@@ -6,6 +6,7 @@ the results page. Kept separate from tcg_scraper.py, which only talks to
 TCGPlayer — this module knows nothing about TCGPlayer's API shapes.
 """
 import time
+import math
 from datetime import datetime, timezone
 
 import requests
@@ -75,29 +76,52 @@ def days_since(date_str):
         return None
 
 
+# def weighted_average(totals_with_days):
+#     """
+#     totals_with_days: list of (total, days_ago) tuples; days_ago may be None.
+
+#     Weight = 1 / (days_ago + 1): a sale from today gets weight 1, one from
+#     9 days ago gets weight 0.1, and so on — more recent sales count more.
+#     This exact curve is a judgment call (the request said "reduce weight
+#     each day" but not by how much); swap it out if it doesn't match
+#     expectations once you see it against real sales.
+
+#     A sale with no parseable date is treated as "today" (weight 1) rather
+#     than dropped, so a date-parsing gap doesn't silently remove data.
+
+#     Returns None for an empty list.
+#     """
+#     if not totals_with_days:
+#         return None
+#     weight_sum = 0.0
+#     weighted_sum = 0.0
+#     for total, days_ago in totals_with_days:
+#         weight = 1.0 / ((days_ago or 0) + 1)
+#         weight_sum += weight
+#         weighted_sum += weight * total
+#     return weighted_sum / weight_sum if weight_sum else None
+
+
 def weighted_average(totals_with_days):
-    """
-    totals_with_days: list of (total, days_ago) tuples; days_ago may be None.
-
-    Weight = 1 / (days_ago + 1): a sale from today gets weight 1, one from
-    9 days ago gets weight 0.1, and so on — more recent sales count more.
-    This exact curve is a judgment call (the request said "reduce weight
-    each day" but not by how much); swap it out if it doesn't match
-    expectations once you see it against real sales.
-
-    A sale with no parseable date is treated as "today" (weight 1) rather
-    than dropped, so a date-parsing gap doesn't silently remove data.
-
-    Returns None for an empty list.
-    """
     if not totals_with_days:
         return None
+
+    DECAY_DAYS = 90.0
+    WEIGHT_AT_DECAY = 0.15
+
     weight_sum = 0.0
     weighted_sum = 0.0
+
     for total, days_ago in totals_with_days:
-        weight = 1.0 / ((days_ago or 0) + 1)
+        days_ago = max(days_ago or 0, 0)
+
+        # A sale 90 days old has 15% of the weight
+        # of a sale from today.
+        weight = WEIGHT_AT_DECAY ** (days_ago / DECAY_DAYS)
+
         weight_sum += weight
         weighted_sum += weight * total
+
     return weighted_sum / weight_sum if weight_sum else None
 
 
