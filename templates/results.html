@@ -51,9 +51,9 @@
                 ${{ "%.2f"|format(l.total) }}
 
                 {% if l.diff is defined and l.diff is not none %}
-                  {% if l.diff > 0 %}
+                  {% if l.diff < 0 %}
                     <span class="diff-neg">(+${{ "%.2f"|format(l.diff) }})</span>
-                  {% elif l.diff < 0 %}
+                  {% elif l.diff > 0 %}
                     <span class="diff-pos">(-${{ "%.2f"|format(-l.diff) }})</span>
                   {% else %}
                     <span class="diff-pos">(+$0.00)</span>
