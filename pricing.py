@@ -206,10 +206,13 @@ def add_listing_diffs(listings, sales_stats):
         if not listing:
             continue
 
+        # Always initialize the key so Jinja never encounters
+        # a listing dictionary without "diff".
+        listing["diff"] = None
+
         stats = sales_stats.get(condition)
 
         if not stats:
-            listing["diff"] = None
             continue
 
         listing["diff"] = round(
