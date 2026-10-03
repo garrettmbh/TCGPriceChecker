@@ -135,6 +135,7 @@ def search():
     rate = pricing.get_usd_to_cad_rate()
     listings = pricing.enrich_listings(result["listings"], rate)
     sales, sales_stats = pricing.enrich_sales(result["sales"], rate)
+    listings = pricing.add_listing_diffs(listings, sales_stats)
 
     return render_template(
         "results.html",
@@ -174,6 +175,7 @@ def card_detail(product_id):
     rate = pricing.get_usd_to_cad_rate()
     listings = pricing.enrich_listings(result["listings"], rate)
     sales, sales_stats = pricing.enrich_sales(result["sales"], rate)
+    listings = pricing.add_listing_diffs(listings, sales_stats)
 
     return render_template(
         "results.html",

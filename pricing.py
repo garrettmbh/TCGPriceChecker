@@ -190,3 +190,31 @@ def enrich_sales(sales, rate=None):
             stats[condition] = None
 
     return sales, stats
+
+
+def add_listing_diffs(listings, sales_stats):
+    """
+    Adds the difference between each condition's lowest current listing
+    and its weighted recent-sales average.
+
+    diff = lowest_current_listing_total - weighted_avg
+
+    Positive diff means the current listing is above the weighted average.
+    Negative diff means the current listing is below the weighted average.
+    """
+    for condition, listing in listings.items():
+        if not listing:
+            continue
+
+        stats = sales_stats.get(condition)
+
+        if not stats:
+            listing["diff"] = None
+            continue
+
+        listing["diff"] = round(
+            listing["total"] - stats["weighted_avg"],
+            2,
+        )
+
+    return listings
