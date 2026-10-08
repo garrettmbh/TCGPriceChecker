@@ -11,44 +11,97 @@ from your phone (same wifi network) — see README for finding your LAN IP.
 
 For a public deployment (e.g. Northflank), see Dockerfile and README.md —
 gunicorn runs this app there instead of the __main__ block below, and
-APP_USERNAME/APP_PASSWORD add a login prompt.
+APP_USERNAME/APP_PASSWORD add a login page.
 """
 
 import os
 import secrets
 import copy
+from datetime import timedelta
 
-from flask import Flask, render_template, request, Response
+from flask import Flask, render_template, request, redirect, url_for, session
 import pricing
 import tcg_scraper
 
 app = Flask(__name__)
 
-# Optional HTTP Basic Auth. Set APP_USERNAME and APP_PASSWORD (e.g. in
+# Session-based login. Set APP_USERNAME and APP_PASSWORD (e.g. in
 # Northflank's runtime variables) to require a login for every page — this
 # app makes outbound requests to TCGPlayer using your dummy account's
 # cookie, so a public URL should not be left open to anyone who finds it.
-# Unset locally, this is a no-op.
+# Unset locally (both empty), this is a no-op and every route is open.
+#
+# This replaced HTTP Basic Auth, which mobile browsers (Safari especially)
+# tend to forget far sooner than desktop ones, forcing repeated logins.
+# A session cookie, by contrast, persists for SESSION_LIFETIME_DAYS below.
 _APP_USERNAME = os.environ.get("APP_USERNAME", "")
 _APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
+SESSION_LIFETIME_DAYS = 30
+
+# Signs the session cookie. If APP_SECRET_KEY isn't set, a random key is
+# generated at startup instead — the app still works, but every restart
+# (including a redeploy) invalidates existing sessions, logging everyone
+# out. Set APP_SECRET_KEY in Northflank to avoid that; see README.
+app.secret_key = os.environ.get("APP_SECRET_KEY") or secrets.token_hex(32)
+app.permanent_session_lifetime = timedelta(days=SESSION_LIFETIME_DAYS)
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+# Northflank serves this over HTTPS, so the cookie should require it there.
+# For local http:// testing with auth enabled, set SESSION_COOKIE_SECURE=0.
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("SESSION_COOKIE_SECURE", "1") != "0"
+
+
+def _auth_enabled():
+    return bool(_APP_USERNAME and _APP_PASSWORD)
+
+
+@app.context_processor
+def _inject_auth_state():
+    # Lets every template show/hide a "Log out" link without passing this
+    # through each individual render_template() call.
+    return {"logged_in": _auth_enabled() and bool(session.get("authenticated"))}
 
 
 @app.before_request
 def _require_login():
-    if not _APP_USERNAME or not _APP_PASSWORD:
-        return None  # auth not configured — behave as before
-    auth = request.authorization
-    valid = (
-        auth
-        and secrets.compare_digest(auth.username, _APP_USERNAME)
-        and secrets.compare_digest(auth.password, _APP_PASSWORD)
-    )
-    if not valid:
-        return Response(
-            "Login required.", 401,
-            {"WWW-Authenticate": 'Basic realm="Card Price Lookup"'},
-        )
+    if not _auth_enabled():
+        return None  # auth not configured — every route is open
+    if request.endpoint in ("login", "static"):
+        return None
+    if not session.get("authenticated"):
+        dest = request.full_path if request.query_string else request.path
+        return redirect(url_for("login", next=dest))
     return None
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not _auth_enabled():
+        return redirect(url_for("index"))
+    error = None
+    next_url = request.values.get("next", "") or url_for("index")
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        next_url = url_for("index")  # only ever redirect within this site
+    if request.method == "POST":
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
+        if (
+            secrets.compare_digest(username, _APP_USERNAME)
+            and secrets.compare_digest(password, _APP_PASSWORD)
+        ):
+            session.clear()
+            session["authenticated"] = True
+            session.permanent = True
+            return redirect(next_url)
+        error = "Incorrect username or password."
+    return render_template("login.html", error=error, next=next_url)
+
+
+@app.route("/logout", methods=["GET", "POST"])
+def logout():
+    session.clear()
+    return redirect(url_for("login") if _auth_enabled() else url_for("index"))
+
 
 # Very small in-memory cache so re-loading a result page (or two people
 # looking up the same card) doesn't hammer TCGPlayer. Keyed by product_id.

@@ -52,7 +52,8 @@ label {
   display: block;
 }
 
-input[type="text"] {
+input[type="text"],
+input[type="password"] {
   width: 100%;
   padding: 10px 12px;
   border-radius: 8px;
@@ -272,3 +273,27 @@ label.check input { width: 20px; height: 20px; }
   margin-bottom: 16px;
   font-size: 0.9rem;
 }
+
+/* --- Added for the login/logout feature (append to static/style.css) --- */
+
+/* 1) Password field: find your existing rule that starts with
+      input[type="text"] {
+   and change that selector line to:
+      input[type="text"],
+      input[type="password"] {
+   (keeps the same properties, so the password box matches the text boxes). */
+
+/* 2) New rules: */
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.topbar .back-link { margin: 0; }
+.logout-link {
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+.logout-link:hover { color: var(--text); }
