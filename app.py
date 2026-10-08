@@ -145,9 +145,9 @@ def index():
 
 @app.route("/search", methods=["GET"])
 def search():
-    name = request.args.get("name", "").strip()
+    name = request.args.get("pokemon_card_name", "").strip()
     set_name = request.args.get("set_name", "").strip() or None
-    card_number = request.args.get("card_number", "").strip() or None
+    card_number = request.args.get("pokemon_card_number", "").strip() or None
     holo_type = request.args.get("holo_type", "").strip() or None
     edition = request.args.get("edition", "").strip()
     # Hidden "0" + checkbox "1" share the name; unchecked sends only the "0".
