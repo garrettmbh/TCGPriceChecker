@@ -62,37 +62,6 @@ failed. To fix it:
    functions are small and isolated specifically so this is a quick patch,
    not a rewrite.
 
-## Deploying to Northflank (free, always-on)
-
-This includes a Dockerfile, so Northflank can build and run it directly —
-no code changes needed beyond what's already here.
-
-1. Push this project to a GitHub repo (Northflank builds from a repo, not a
-   local folder).
-2. In Northflank: **Projects -> Create Project**, then inside it
-   **Services -> Create Service -> Combined service**, and connect the repo.
-3. Under **Build options**, choose **Dockerfile**, path `/Dockerfile`.
-4. Under **Networking**, add a port: **8000**, protocol **HTTP**, public
-   enabled. (8000 is what the Dockerfile's gunicorn binds to — if you change
-   one, change the other to match.)
-5. Under **Environment / runtime variables**, add:
-   - `TCG_AUTH_TICKET` — the dummy account's cookie value (see above)
-   - `APP_USERNAME` / `APP_PASSWORD` — pick any login you want; this puts a
-     password prompt on the whole site, which matters once it's a public
-     URL making requests through your dummy account's cookie
-6. Create the service. Northflank builds the image and gives you an HTTPS
-   URL when it's done — that's the site.
-7. Pick the free **Sandbox** plan when prompted, if it isn't the default.
-
-Since Sandbox is a capped free tier, not a guarantee, check Northflank's
-current pricing page before relying on it long-term — free tiers do
-sometimes get pared back.
-
-Every push to the connected branch redeploys automatically. Rotate
-`TCG_AUTH_TICKET` here the same way you would locally, by re-copying the
-cookie and updating the variable's value — no redeploy needed for that
-alone, though Northflank may restart the service to apply it.
-
 ## Optional: use a logged-in (dummy) TCGPlayer account
 
 TCGPlayer can show more sales history to logged-in users. Rather than putting
@@ -106,6 +75,27 @@ environment variable (unset = anonymous, the default):
 
 Treat that value like a password: keep it out of the script, git, and chats.
 It expires periodically, so re-copy it if results stop looking "logged in".
+
+## Login / logout
+
+Set these environment variables to put a login page in front of the whole
+site (recommended for any public deployment, since the app makes requests to
+TCGPlayer through your dummy account's cookie). Leave `APP_USERNAME` and
+`APP_PASSWORD` unset and every page stays open — the default for local runs.
+
+- `APP_USERNAME` / `APP_PASSWORD` — the login to require
+- `APP_SECRET_KEY` — any long random string (e.g. `openssl rand -hex 32`).
+  Signs the login session cookie. Without it, a random key is generated each
+  time the app starts, which logs everyone out on every redeploy/restart.
+- `SESSION_COOKIE_SECURE` — defaults to on (HTTPS only). Set to `0` only for
+  local `http://` testing with auth enabled, since browsers won't store a
+  `Secure` cookie over plain HTTP.
+
+Login uses a signed session cookie (not HTTP Basic Auth, which mobile
+browsers forget quickly), lasting 30 days — change `SESSION_LIFETIME_DAYS` in
+`app.py` to adjust. A "Log out" link appears on every page once logged in,
+and `/logout` works directly too. Cookies are per browser/device, so expect
+one login on each.
 
 ## A few things worth knowing
 

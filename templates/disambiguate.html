@@ -8,7 +8,10 @@
 </head>
 <body>
   <div class="wrap">
-    <a class="back-link top" href="/">&larr; New search</a>
+    <div class="topbar">
+      <a class="back-link top" href="/">&larr; New search</a>
+      {% if logged_in %}<a class="logout-link" href="{{ url_for('logout') }}">Log out</a>{% endif %}
+    </div>
     <h1>Multiple matches</h1>
     <div class="subtitle">Pick the exact card you meant.</div>
     {% if search_note %}<div class="notice">{{ search_note }}</div>{% endif %}
