@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Choose a card — Card Price Lookup</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <a class="back-link top" href="/">&larr; New search</a>
+      {% if logged_in %}<a class="logout-link" href="{{ url_for('logout') }}">Log out</a>{% endif %}
+    </div>
+    <h1>Multiple matches</h1>
+    <div class="subtitle">Pick the exact card you meant.</div>
+    {% if search_note %}<div class="notice">{{ search_note }}</div>{% endif %}
+
+    <div class="candidate-list">
+      {% for c in candidates %}
+        <a class="candidate" href="{{ url_for('card_detail', product_id=c.product_id, name=c.name, set_name=c.set_name, card_number=c.number, printing=printing) }}">
+          <img src="{{ c.image_url }}" alt="{{ c.name }}" onerror="this.style.visibility='hidden'">
+          <div>
+            <div class="name">{{ c.name }}{% if c.number %} — #{{ c.number }}{% endif %}</div>
+            <div class="set">{{ c.set_name }}{% if c.rarity %} · {{ c.rarity }}{% endif %}</div>
+          </div>
+        </a>
+      {% endfor %}
+    </div>
+  </div>
+</body>
+</html>
