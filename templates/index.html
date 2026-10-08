@@ -8,7 +8,6 @@
 </head>
 <body>
   <div class="wrap">
-    {% if logged_in %}<div class="topbar"><span></span><a class="logout-link" href="{{ url_for('logout') }}">Log out</a></div>{% endif %}
     <h1>Pokémon Card Price Lookup</h1>
     <div class="subtitle">Current lowest listings + recent sales from TCGPlayer, by condition.</div>
 
@@ -19,7 +18,7 @@
     <form class="search-form" action="/search" method="get">
       <div>
         <label for="name">Card name (required)</label>
-        <input type="text" id="name" name="name" placeholder="e.g. Charizard" value="{{ name or '' }}" required>
+        <input type="text" id="name" name="pokemon_card_name" autocomplete="new-password" placeholder="e.g. Charizard" value="{{ name or '' }}" required>
       </div>
       <div class="row2">
         <div>
@@ -28,7 +27,7 @@
         </div>
         <div>
           <label for="card_number">Card number</label>
-          <input type="text" id="card_number" name="card_number" placeholder="e.g. 4/102" value="{{ card_number or '' }}">
+          <input type="text" id="card_number" name="pokemon_card_number" autocomplete="new-password" placeholder="e.g. 4/102" value="{{ card_number or '' }}">
         </div>
       </div>
       <div>
