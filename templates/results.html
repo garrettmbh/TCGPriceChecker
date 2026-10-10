@@ -54,7 +54,7 @@
     {% endif %}
 
     <h3 class="section-title">Lowest current listing (price + shipping)
-      <span class="info-icon" tabindex="0" title="USD = listing price + shipping. CAD = USD x the current exchange rate ({{ '%.4f'|format(fx_rate) }}). Total = CAD x 1.0875 (NY sales tax).">?</span>
+      <span class="info-icon" tabindex="0" title="USD = listing price + shipping. CAD = USD x the current exchange rate ({{ '%.4f'|format(fx_rate) }}). Total = CAD x 1.0875 (NY sales tax). The (+/-$) beside Total compares the lowest current listing's Total to the weighted average of recent sales for that condition: red (+) means the listing costs more than recent sales, green (-) means it costs less.">?</span>
     </h3>
     <table>
       <thead>
@@ -66,7 +66,19 @@
           <tr>
             <td>{{ condition }}</td>
             {% if l %}
-              <td class="total-value">${{ "%.2f"|format(l.total) }}</td>
+              <td class="total-value">
+                ${{ "%.2f"|format(l.total) }}
+                {# lowest current listing minus the weighted avg of recent sales: + (red) = pricier than recent sales #}
+                {% if l.diff is defined and l.diff is not none %}
+                  {% if l.diff > 0 %}
+                    <span class="diff-pos">(+${{ "%.2f"|format(l.diff) }})</span>
+                  {% elif l.diff < 0 %}
+                    <span class="diff-neg">(-${{ "%.2f"|format(-l.diff) }})</span>
+                  {% else %}
+                    <span class="diff-neg">(+$0.00)</span>
+                  {% endif %}
+                {% endif %}
+              </td>
               <td>${{ "%.2f"|format(l.cad) }}</td>
               <td>${{ "%.2f"|format(l.usd) }}</td>
             {% else %}
@@ -78,7 +90,7 @@
     </table>
 
     <h3 class="section-title">Recent sales
-      <span class="info-icon" tabindex="0" title="Weighted avg favors recent sales: each sale is weighted 1/(days since sale + 1). The (+/-$) beside each Total is that sale's Total compared to the weighted avg for its condition -- red means this sale was below the weighted avg, green means at or above it. Date color: green = within 1 month, yellow = 1-2 months, red = 2+ months.">?</span>
+      <span class="info-icon" tabindex="0" title="Weighted avg favors recent sales: a sale's weight shrinks with every day since it sold, down to 15% of a same-day sale's weight at 90 days old. Simple avg counts every sale equally. Date color: green = within 1 month, yellow = 1-2 months, red = 2+ months.">?</span>
     </h3>
     {% set ns = namespace(any_sales=false) %}
     {% for condition in condition_order %}
@@ -112,14 +124,7 @@
                 {% endif %}
                 <tr>
                   <td class="{{ recency_class }}">{{ sale.date[:10] if sale.date else '—' }}</td>
-                  <td class="total-value">
-                    ${{ "%.2f"|format(sale.total) }}
-                    {% if sale.diff > 0 %}
-                      <span class="diff-pos">(+${{ "%.2f"|format(sale.diff) }})</span>
-                    {% else %}
-                      <span class="diff-neg">({{ "-$%.2f"|format(-sale.diff) if sale.diff < 0 else "+$0.00" }})</span>
-                    {% endif %}
-                  </td>
+                  <td class="total-value">${{ "%.2f"|format(sale.total) }}</td>
                   <td>${{ "%.2f"|format(sale.cad) }}</td>
                   <td>${{ "%.2f"|format(sale.usd) }}</td>
                 </tr>
