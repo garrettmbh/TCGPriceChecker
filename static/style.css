@@ -297,3 +297,15 @@ label.check input { width: 20px; height: 20px; }
   text-decoration: none;
 }
 .logout-link:hover { color: var(--text); }
+.sort-bar { margin-bottom: 12px; }
+.sort-bar label { display: block; margin-bottom: 4px; }
+.candidate .info { flex: 1; min-width: 0; }
+.candidate .price {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--accent-2);
+  white-space: nowrap;
+}
+.printing-bar { margin-bottom: 12px; }
+.printing-bar label { display: block; margin-bottom: 4px; }
+.printing-bar button { margin-top: 8px; }

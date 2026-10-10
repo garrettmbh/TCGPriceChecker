@@ -22,15 +22,20 @@ If something breaks, the fastest way to fix it is:
 """
 
 import json
+import logging
 import os
 import re
 import requests
 import time
+from datetime import date, datetime, timezone
+
+log = logging.getLogger(__name__)
 
 SEARCH_URL = "https://mp-search-api.tcgplayer.com/v1/search/request"
 LISTINGS_URL = "https://mp-search-api.tcgplayer.com/v1/product/{product_id}/listings"
 LATEST_SALES_URL = "https://mpapi.tcgplayer.com/v2/product/{product_id}/latestsales"
 PRODUCT_PAGE_URL = "https://www.tcgplayer.com/product/{product_id}"
+SET_NAMES_URL = "https://mpapi.tcgplayer.com/v2/Catalog/SetNames"
 
 HEADERS = {
     "User-Agent": (
@@ -55,6 +60,19 @@ CONDITION_ORDER = [
 
 class TCGScraperError(Exception):
     pass
+
+
+def _optional_number(value):
+    """
+    Like _unwrap_number, but returns None when there's no usable value
+    (missing, null, non-numeric, or <= 0) instead of 0.0. Used for fields
+    where "no data" must stay distinguishable from a real number, e.g. a
+    card with no market price should sort last rather than as $0.
+    """
+    if value is None or value == "":
+        return None
+    n = _unwrap_number(value)
+    return n if n > 0 else None
 
 
 def _unwrap_number(value):
@@ -220,6 +238,9 @@ def _search_once(session, query):
                 "set_name": r.get("setName", ""),
                 "number": (r.get("customAttributes") or {}).get("number", ""),
                 "rarity": r.get("rarityName", ""),
+                # For the picker page's sort dropdown.
+                "market_price": _optional_number(r.get("marketPrice")),
+                "set_id": (lambda n: int(n) if n else None)(_optional_number(r.get("setId"))),
                 "image_url": f"https://tcgplayer-cdn.tcgplayer.com/product/{product_id}_200w.jpg",
                 "url": PRODUCT_PAGE_URL.format(product_id=product_id),
             })
@@ -261,6 +282,138 @@ def _filter_candidates(candidates, set_name, card_number):
     return out
 
 
+# --- Set release dates (for "Set order" sorting) ---------------------------
+#
+# The search response only gives a numeric setId, which isn't chronological.
+# TCGPlayer's SetNames catalog lists every Pokemon set with a releaseDate, so
+# we look dates up there. The set list only changes about monthly, so it's
+# cached in memory instead of being fetched on every search.
+
+SET_CACHE_TTL_SECONDS = 24 * 60 * 60        # refresh the set list daily
+SET_RETRY_AFTER_FAILURE_SECONDS = 5 * 60    # don't hammer TCGPlayer if it's failing
+# Which field in a SetNames row equals the search result's setId isn't
+# something I could confirm without a real response, so we try these and keep
+# whichever one actually overlaps the setIds in the current search results.
+_SET_ID_KEYS = ("setNameId", "setId", "id")
+
+_set_cache = {"rows": None, "fetched_at": 0.0, "last_attempt": 0.0}
+
+
+def _parse_release_date(value):
+    """Best-effort conversion of a releaseDate value to a datetime.date."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        ts = float(value)
+        ts = ts / 1000.0 if ts > 1e11 else ts  # milliseconds -> seconds
+        try:
+            return datetime.fromtimestamp(ts, tz=timezone.utc).date()
+        except (OverflowError, OSError, ValueError):
+            return None
+    text = str(value).strip()
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", text)  # 2001-09-21 / 2001-09-21T00:00:00Z
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+    for fmt in ("%m/%d/%Y", "%B %d, %Y", "%b %d, %Y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            pass
+    return None
+
+
+def _find_set_rows(obj, depth=0):
+    """Locate the list of set dicts (the ones with a releaseDate) anywhere in
+    the response, whatever it's wrapped in ({"results": [...]}, a bare list...)."""
+    if depth > 4:
+        return None
+    if isinstance(obj, list):
+        if any(isinstance(x, dict) and "releaseDate" in x for x in obj[:10]):
+            return obj
+        for x in obj:
+            found = _find_set_rows(x, depth + 1)
+            if found:
+                return found
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            if isinstance(v, (list, dict)):
+                found = _find_set_rows(v, depth + 1)
+                if found:
+                    return found
+    return None
+
+
+def _load_sets():
+    """Cached [{"ids": {key: int}, "date": date|None}, ...] from SetNames.
+    On failure, keeps serving the last good (possibly stale) list; returns []
+    if there's never been one. Never raises — sorting is a nicety and must
+    not break a search."""
+    now = time.time()
+    rows = _set_cache["rows"]
+    if rows is not None and (now - _set_cache["fetched_at"]) < SET_CACHE_TTL_SECONDS:
+        return rows
+    if rows is None and (now - _set_cache["last_attempt"]) < SET_RETRY_AFTER_FAILURE_SECONDS \
+            and _set_cache["last_attempt"]:
+        return []
+    _set_cache["last_attempt"] = now
+    try:
+        headers = {k: v for k, v in HEADERS.items() if k != "Content-Type"}
+        resp = requests.get(SET_NAMES_URL, params={"categoryId": 3, "mpfev": 5616},
+                            headers=headers, timeout=10)
+        resp.raise_for_status()
+        raw = _find_set_rows(resp.json())
+        if not raw:
+            raise ValueError("no set list with releaseDate found in response")
+        parsed = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            ids = {}
+            for key in _SET_ID_KEYS:
+                n = _optional_number(item.get(key))
+                if n:
+                    ids[key] = int(n)
+            parsed.append({"ids": ids, "date": _parse_release_date(item.get("releaseDate"))})
+        _set_cache.update(rows=parsed, fetched_at=now)
+        return parsed
+    except Exception as e:  # network, JSON, shape — all just mean "no dates this time"
+        log.warning("Could not load set release dates (%s); %s", e,
+                    "using stale list" if rows is not None else "set order will fall back to setId")
+        return rows or []
+
+
+def annotate_release_dates(candidates):
+    """Adds set_release (ISO date string) and set_release_ord (sortable int)
+    to each candidate whose set is found; leaves them None otherwise."""
+    for c in candidates:
+        c["set_release"] = None
+        c["set_release_ord"] = None
+    wanted = {c["set_id"] for c in candidates if c.get("set_id")}
+    if not wanted:
+        return
+    rows = _load_sets()
+    if not rows:
+        return
+    best_key, best_hits = None, 0
+    for key in _SET_ID_KEYS:
+        have = {r["ids"][key] for r in rows if key in r["ids"]}
+        if len(wanted & have) > best_hits:
+            best_key, best_hits = key, len(wanted & have)
+    if best_key is None:
+        log.warning("No SetNames id field matched the search results' setIds %s; "
+                    "sample row ids: %s", sorted(wanted)[:5], [r["ids"] for r in rows[:3]])
+        return
+    dates = {r["ids"][best_key]: r["date"] for r in rows if best_key in r["ids"] and r["date"]}
+    for c in candidates:
+        d = dates.get(c.get("set_id"))
+        if d:
+            c["set_release"] = d.isoformat()
+            c["set_release_ord"] = d.toordinal()
+
+
 def find_candidates(name, set_name=None, card_number=None, holo_type=None):
     """
     Search from most to least specific until something matches:
@@ -286,6 +439,7 @@ def find_candidates(name, set_name=None, card_number=None, holo_type=None):
             note = None if i == 0 else (
                 f'No results for "{queries[0]}", so these are results for "{q}".'
             )
+            annotate_release_dates(found)
             return found, note
     return [], None
 
@@ -356,6 +510,26 @@ LISTINGS_PAGE_SIZE = 50
 LISTINGS_MAX_PAGES = 6
 
 
+# Printings a product has (e.g. ["Normal", "Reverse Holofoil"]), remembered so
+# the results page's Printing dropdown can list every option even while one
+# printing is selected. Printings per product almost never change, so this is
+# only a few hours' cache, mainly to avoid re-learning it on every switch.
+PRINTINGS_CACHE_TTL_SECONDS = 6 * 60 * 60
+_printings_cache = {}  # product_id -> {"printings": [...], "ts": float}
+
+
+def _cached_printings(product_id):
+    entry = _printings_cache.get(product_id)
+    if entry and (time.time() - entry["ts"]) < PRINTINGS_CACHE_TTL_SECONDS:
+        return entry["printings"]
+    return None
+
+
+def _store_printings(product_id, printings):
+    if printings:
+        _printings_cache[product_id] = {"printings": sorted(set(printings)), "ts": time.time()}
+
+
 def get_current_listings(product_id, printing_filter=None):
     """
     Fetch current live listings for a product, grouped by condition, with
@@ -375,7 +549,8 @@ def get_current_listings(product_id, printing_filter=None):
     Returns a dict:
       {
         "by_condition": {condition: {...} or None, ...},
-        "available_printings": [str, ...],
+        "available_printings": [str, ...],   # every printing the product has,
+                                             # even when printing_filter is set
       }
     """
     product_id = int(float(product_id))
@@ -467,6 +642,38 @@ def get_current_listings(product_id, printing_filter=None):
         if done:
             break
         resp = fetch_page(page, server_filtered)
+
+    def discover_all_printings():
+        """One unfiltered request, just to learn which printings exist."""
+        try:
+            r = fetch_page(0, False)
+            if r.status_code != 200:
+                return set()
+            blk = r.json()["results"][0]
+            found = set()
+            for agg in (blk.get("aggregations") or {}).get("printing", []) or []:
+                if agg.get("value"):
+                    found.add(agg["value"])
+            for listing in blk.get("results", []) or []:
+                if listing.get("printing"):
+                    found.add(listing["printing"])
+            return found
+        except Exception:
+            return set()  # the dropdown is a nicety; never fail the lookup over it
+
+    if not printing_filter or not server_filtered:
+        # We saw the product unfiltered (or filtered it ourselves), so this is
+        # the complete list.
+        _store_printings(product_id, available_printings)
+    else:
+        # The server-side filter can narrow TCGPlayer's printing breakdown to
+        # just the selected printing, leaving nothing to switch to. Use the
+        # remembered full list, or learn it with one extra request.
+        full = _cached_printings(product_id)
+        if full is None:
+            full = discover_all_printings() if len(available_printings) <= 1 else set(available_printings)
+            _store_printings(product_id, full)
+        available_printings |= set(full or ())
 
     return {
         "by_condition": lowest_by_condition,
