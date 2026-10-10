@@ -8,7 +8,10 @@
 </head>
 <body>
   <div class="wrap">
-    <a class="back-link top" href="/">&larr; New search</a>
+    <div class="topbar">
+      <a class="back-link top" href="/">&larr; New search</a>
+      {% if logged_in %}<a class="logout-link" href="{{ url_for('logout') }}">Log out</a>{% endif %}
+    </div>
     {% if search_note %}<div class="notice">{{ search_note }}</div>{% endif %}
 
     <div class="card-header">
@@ -20,16 +23,32 @@
       </div>
     </div>
 
-    {% if printing_filter or (available_printings and available_printings|length > 1) %}
+    {% set printing_options = available_printings or [] %}
+    {% if printing_filter or printing_options|length > 1 %}
+      {# Switch printings without a new search: re-requests this same card with a different filter. #}
+      <form class="printing-bar" method="get" action="{{ url_for('card_detail', product_id=product.product_id) }}">
+        <input type="hidden" name="name" value="{{ product.name }}">
+        <input type="hidden" name="set_name" value="{{ product.set_name }}">
+        <input type="hidden" name="card_number" value="{{ product.number }}">
+        <label for="printing">Printing</label>
+        <select id="printing" name="printing" onchange="this.form.submit()">
+          <option value="">All printings</option>
+          {% for p in printing_options %}
+            <option value="{{ p }}" {% if p == printing_filter %}selected{% endif %}>{{ p }}</option>
+          {% endfor %}
+          {% if printing_filter and printing_filter not in printing_options %}
+            <option value="{{ printing_filter }}" selected>{{ printing_filter }} (no listings)</option>
+          {% endif %}
+        </select>
+        <noscript><button type="submit">Apply</button></noscript>
+      </form>
+
       <div class="error" style="background:#1d2a3a; border-color:#2b4a6b; color:#bcd9f5;">
-        {% if available_printings and available_printings|length > 1 %}
-          This card has multiple printings: {{ available_printings|join(', ') }}.
-        {% endif %}
         {% if printing_filter %}
           Showing only <strong>{{ printing_filter }}</strong> listings and sales.
         {% else %}
-          Prices below mix all of them together — pick a printing on the
-          <a href="/" style="color:#f4b942;">search page</a> to separate them.
+          Prices below mix all printings together ({{ printing_options|join(', ') }}) —
+          choose one in the Printing menu above to separate them.
         {% endif %}
       </div>
     {% endif %}

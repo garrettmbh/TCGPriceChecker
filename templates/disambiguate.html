@@ -16,17 +16,90 @@
     <div class="subtitle">Pick the exact card you meant.</div>
     {% if search_note %}<div class="notice">{{ search_note }}</div>{% endif %}
 
+    <div class="sort-bar">
+      <label for="sort">Sort by</label>
+      <select id="sort">
+        <option value="price-desc">Market price: high to low</option>
+        <option value="price-asc">Market price: low to high</option>
+        <option value="set-asc">Set order: oldest first</option>
+        <option value="set-desc">Set order: newest first</option>
+      </select>
+    </div>
+
     <div class="candidate-list">
       {% for c in candidates %}
-        <a class="candidate" href="{{ url_for('card_detail', product_id=c.product_id, name=c.name, set_name=c.set_name, card_number=c.number, printing=printing) }}">
+        <a class="candidate"
+           data-price="{{ c.market_price if c.market_price is not none else '' }}"
+           data-release="{{ c.set_release_ord if c.set_release_ord is not none else '' }}"
+           data-set="{{ c.set_id if c.set_id is not none else '' }}"
+           data-number="{{ c.number }}"
+           href="{{ url_for('card_detail', product_id=c.product_id, name=c.name, set_name=c.set_name, card_number=c.number, printing=printing) }}">
           <img src="{{ c.image_url }}" alt="{{ c.name }}" onerror="this.style.visibility='hidden'">
-          <div>
+          <div class="info">
             <div class="name">{{ c.name }}{% if c.number %} — #{{ c.number }}{% endif %}</div>
-            <div class="set">{{ c.set_name }}{% if c.rarity %} · {{ c.rarity }}{% endif %}</div>
+            <div class="set">{{ c.set_name }}{% if c.set_release %} ({{ c.set_release }}){% endif %}{% if c.rarity %} · {{ c.rarity }}{% endif %}</div>
+          </div>
+          <div class="price" title="TCGPlayer market price (USD)">
+            {% if c.market_price is not none %}${{ "{:,.2f}".format(c.market_price) }}{% else %}&mdash;{% endif %}
           </div>
         </a>
       {% endfor %}
     </div>
+
+    <script>
+      // Sorts the list in the browser, so changing the order is instant and
+      // doesn't re-run the TCGPlayer search.
+      (function () {
+        var list = document.querySelector(".candidate-list");
+        var select = document.getElementById("sort");
+        if (!list || !select) return;
+
+        var items = Array.prototype.slice.call(list.children);
+        items.forEach(function (el, i) { el.dataset.index = i; });
+
+        function num(el, key) {
+          var v = parseFloat(el.dataset[key]);
+          return isNaN(v) ? null : v;
+        }
+        function cardNo(el) {
+          var m = (el.dataset.number || "").match(/\d+/);
+          return m ? parseInt(m[0], 10) : null;
+        }
+        // Items with no value (e.g. no market price) go last in either direction.
+        function cmp(a, b, dir) {
+          if (a === null && b === null) return 0;
+          if (a === null) return 1;
+          if (b === null) return -1;
+          return dir * (a - b);
+        }
+        function byIndex(a, b) { return a.dataset.index - b.dataset.index; }
+
+        var sorters = {
+          "price-desc": function (a, b) { return cmp(num(a, "price"), num(b, "price"), -1) || byIndex(a, b); },
+          "price-asc":  function (a, b) { return cmp(num(a, "price"), num(b, "price"), 1) || byIndex(a, b); },
+          // Sets are ordered by release date; setId then keeps two sets with
+          // the same date grouped (and is the fallback if no dates loaded).
+          // Within a set, cards are listed by card number.
+          "set-asc":    function (a, b) { return cmp(num(a, "release"), num(b, "release"), 1)  || cmp(num(a, "set"), num(b, "set"), 1)  || cmp(cardNo(a), cardNo(b), 1) || byIndex(a, b); },
+          "set-desc":   function (a, b) { return cmp(num(a, "release"), num(b, "release"), -1) || cmp(num(a, "set"), num(b, "set"), -1) || cmp(cardNo(a), cardNo(b), 1) || byIndex(a, b); }
+        };
+
+        function apply() {
+          items.slice().sort(sorters[select.value]).forEach(function (el) { list.appendChild(el); });
+          try { sessionStorage.setItem("candidateSort", select.value); } catch (e) {}
+        }
+
+        // Remember the choice so the browser's Back button from a card page
+        // doesn't reset it.
+        try {
+          var saved = sessionStorage.getItem("candidateSort");
+          if (saved && sorters[saved]) select.value = saved;
+        } catch (e) {}
+
+        select.addEventListener("change", apply);
+        apply();
+      })();
+    </script>
   </div>
 </body>
 </html>

@@ -8,6 +8,7 @@
 </head>
 <body>
   <div class="wrap">
+    {% if logged_in %}<div class="topbar"><span></span><a class="logout-link" href="{{ url_for('logout') }}">Log out</a></div>{% endif %}
     <h1>Pokémon Card Price Lookup</h1>
     <div class="subtitle">Current lowest listings + recent sales from TCGPlayer, by condition.</div>
 
