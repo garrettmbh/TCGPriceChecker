@@ -206,8 +206,11 @@ def enrich_sales(sales, rate=None):
             }
 
             for sale in sale_list:
+                # Sale total minus weighted average: positive = this sale was
+                # above the average. (Same direction as add_listing_diffs; not
+                # currently displayed.)
                 sale["diff"] = round(
-                    w_avg - sale["total"],
+                    sale["total"] - w_avg,
                     2,
                 )
         else:
