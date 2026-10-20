@@ -1,0 +1,48 @@
+{# eBay tab content. Rendered twice: once with loading=True as the placeholder
+   inside results.html, and again (loading=False) by /card/<id>/ebay, whose
+   output the page swaps in when the background lookup finishes. #}
+{% if ebay_error %}<div class="error">{{ ebay_error }}</div>{% endif %}
+<div class="notice">
+  eBay search: <strong>{{ ebay_query_text }}</strong> ({{ 'Japanese' if language|default('en') == 'jp' else 'English' }})
+  &middot; <a href="{{ ebay_search_url }}" target="_blank" rel="noopener">open on eBay &rarr;</a>
+  {% if ebay_approximate and not ebay_error and not loading %}
+    <br>Conditions below were guessed from listing titles, because eBay's Card Condition filter wasn't available for this search.
+  {% endif %}
+</div>
+
+<h3 class="section-title">Lowest current listing (price + shipping)
+  <span class="info-icon" tabindex="0" title="USD = eBay item price + the lowest shipping the listing shows (a * means eBay showed no shipping cost, so $0.00 is assumed). Conditions are eBay's Card Condition. CAD = USD x the current exchange rate{% if fx_rate is defined %} ({{ '%.4f'|format(fx_rate) }}){% endif %}. Total = CAD x 1.0875 (NY sales tax). Fan-made, proxy and custom listings are excluded.">?</span>
+</h3>
+<table>
+  <thead>
+    <tr><th>Condition</th><th>Total</th><th>CAD</th><th>USD</th></tr>
+  </thead>
+  <tbody>
+    {% for condition in ebay_condition_order %}
+      {% set l = listings.get(condition) if listings else None %}
+      <tr>
+        <td>{{ condition }}{% if l and l.url %} <a class="ext-link" href="{{ l.url }}" target="_blank" rel="noopener" title="{{ l.title }}">&#8599;</a>{% endif %}</td>
+        {% if loading %}
+          <td class="none loading" colspan="3">Loading&hellip;</td>
+        {% elif l %}
+          <td class="total-value">${{ "%.2f"|format(l.total) }}</td>
+          <td>${{ "%.2f"|format(l.cad) }}</td>
+          <td>${{ "%.2f"|format(l.usd) }}{% if l.shipping_known is defined and not l.shipping_known %}*{% endif %}</td>
+        {% else %}
+          <td class="none" colspan="3">No live listings</td>
+        {% endif %}
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h3 class="section-title">Recent sales</h3>
+<p class="none">{{ sold_message|default('') }}</p>
+<p class="none">Open eBay's own sold listings, newest first, filtered to each condition:</p>
+<div class="sold-links">
+  {% for condition in ebay_condition_order %}
+    <a href="{{ sold_links[condition] }}" target="_blank" rel="noopener">
+      <span>{{ condition }}</span><span class="go">Sold items &#8599;</span>
+    </a>
+  {% endfor %}
+</div>

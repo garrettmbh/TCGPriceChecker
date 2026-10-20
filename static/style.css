@@ -309,3 +309,80 @@ label.check input { width: 20px; height: 20px; }
 .printing-bar { margin-bottom: 12px; }
 .printing-bar label { display: block; margin-bottom: 4px; }
 .printing-bar button { margin-top: 8px; }
+
+/* Price-source toggle: full width like the tables, split into two halves. */
+.source-toggle {
+  display: flex;
+  width: 100%;
+  margin: 18px 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--card);
+}
+.source-toggle a {
+  flex: 1;
+  text-align: center;
+  padding: 11px 0;
+  color: var(--muted);
+  font-weight: 600;
+  text-decoration: none;
+}
+.source-toggle a + a { border-left: 1px solid var(--border); }
+.source-toggle a.active { background: var(--accent); color: #1a1a1a; }
+.notice a { color: var(--accent); }
+.ext-link { color: var(--accent); text-decoration: none; margin-left: 4px; }
+
+/* Per-condition links to eBay's sold listings (eBay view, where recent sales would be). */
+.sold-links {
+  margin: 8px 0 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.sold-links a {
+  display: flex;
+  justify-content: space-between;
+  padding: 11px 12px;
+  color: var(--text);
+  text-decoration: none;
+  border-bottom: 1px solid var(--border);
+}
+.sold-links a:last-child { border-bottom: none; }
+.sold-links .go { color: var(--accent); }
+
+/* Printing choice on the search form: radio buttons shown as a two-column grid of buttons. */
+.option-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+label.option-btn {
+  position: relative;
+  display: block;
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text);
+}
+label.option-btn input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+label.option-btn span {
+  display: block;
+  text-align: center;
+  padding: 11px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0d0f13;
+  cursor: pointer;
+}
+label.option-btn input:checked + span {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a1a1a;
+  font-weight: 600;
+}
+label.option-btn input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 1px; }
