@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ product.name }} — Card Price Lookup</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <style>[hidden] { display: none !important; } .none.loading { opacity: .7; }</style>
 </head>
 <body>
   <div class="wrap">
@@ -23,115 +24,186 @@
       </div>
     </div>
 
-    {% set printing_options = available_printings or [] %}
-    {% if printing_filter or printing_options|length > 1 %}
-      {# Switch printings without a new search: re-requests this same card with a different filter. #}
-      <form class="printing-bar" method="get" action="{{ url_for('card_detail', product_id=product.product_id) }}">
-        <input type="hidden" name="name" value="{{ product.name }}">
-        <input type="hidden" name="set_name" value="{{ product.set_name }}">
-        <input type="hidden" name="card_number" value="{{ product.number }}">
-        <label for="printing">Printing</label>
-        <select id="printing" name="printing" onchange="this.form.submit()">
-          <option value="">All printings</option>
-          {% for p in printing_options %}
-            <option value="{{ p }}" {% if p == printing_filter %}selected{% endif %}>{{ p }}</option>
-          {% endfor %}
-          {% if printing_filter and printing_filter not in printing_options %}
-            <option value="{{ printing_filter }}" selected>{{ printing_filter }} (no listings)</option>
-          {% endif %}
-        </select>
-        <noscript><button type="submit">Apply</button></noscript>
-      </form>
+    {# Price source toggle. Both panels are on this page; switching is instant and client-side. #}
+    {% set tab = initial_tab|default('tcgplayer') %}
+    <nav class="source-toggle" aria-label="Price source">
+      <a href="#tcgplayer" data-tab="tcgplayer" class="{% if tab != 'ebay' %}active{% endif %}" {% if tab != 'ebay' %}aria-current="page"{% endif %}>TCGPlayer</a>
+      <a href="#ebay" data-tab="ebay" class="{% if tab == 'ebay' %}active{% endif %}" {% if tab == 'ebay' %}aria-current="page"{% endif %}>eBay</a>
+    </nav>
 
-      <div class="error" style="background:#1d2a3a; border-color:#2b4a6b; color:#bcd9f5;">
-        {% if printing_filter %}
-          Showing only <strong>{{ printing_filter }}</strong> listings and sales.
-        {% else %}
-          Prices below mix all printings together ({{ printing_options|join(', ') }}) —
-          choose one in the Printing menu above to separate them.
-        {% endif %}
-      </div>
-    {% endif %}
-
-    <h3 class="section-title">Lowest current listing (price + shipping)
-      <span class="info-icon" tabindex="0" title="USD = listing price + shipping. CAD = USD x the current exchange rate ({{ '%.4f'|format(fx_rate) }}). Total = CAD x 1.0875 (NY sales tax).">?</span>
-    </h3>
-    <table>
-      <thead>
-        <tr><th>Condition</th><th>Total</th><th>CAD</th><th>USD</th></tr>
-      </thead>
-      <tbody>
-        {% for condition in condition_order %}
-          {% set l = listings.get(condition) %}
-          <tr>
-            <td>{{ condition }}</td>
-            {% if l %}
-              <td class="total-value">${{ "%.2f"|format(l.total) }}</td>
-              <td>${{ "%.2f"|format(l.cad) }}</td>
-              <td>${{ "%.2f"|format(l.usd) }}</td>
-            {% else %}
-              <td class="none" colspan="3">No live listings</td>
+    <div id="panel-tcgplayer" {% if tab == 'ebay' %}hidden{% endif %}>
+      {% set printing_options = available_printings or [] %}
+      {% if printing_filter or printing_options|length > 1 %}
+        {# Switch printings without a new search: re-requests this same card with a different filter. #}
+        <form class="printing-bar" method="get" action="{{ url_for('card_detail', product_id=product.product_id) }}">
+          <input type="hidden" name="name" value="{{ product.name }}">
+          <input type="hidden" name="set_name" value="{{ product.set_name }}">
+          <input type="hidden" name="card_number" value="{{ product.number }}">
+          <input type="hidden" name="language" value="{{ language|default('en') }}">
+          {# every printing this card has, so the dropdown keeps all of them after you pick one #}
+          <input type="hidden" name="printings" value="{{ printing_options|join('|') }}">
+          <label for="printing">Printing</label>
+          <select id="printing" name="printing" onchange="this.form.submit()">
+            <option value="">All printings</option>
+            {% for p in printing_options %}
+              <option value="{{ p }}" {% if p == printing_filter %}selected{% endif %}>{{ p }}</option>
+            {% endfor %}
+            {% if printing_filter and printing_filter not in printing_options %}
+              <option value="{{ printing_filter }}" selected>{{ printing_filter|replace('|', ' / ') }}{% if '|' not in printing_filter %} (no listings){% endif %}</option>
             {% endif %}
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+          </select>
+          <noscript><button type="submit">Apply</button></noscript>
+        </form>
 
-    <h3 class="section-title">Recent sales
-      <span class="info-icon" tabindex="0" title="Weighted avg favors recent sales: each sale is weighted 1/(days since sale + 1). The (+/-$) beside each Total is that sale's Total compared to the weighted avg for its condition -- red means this sale was below the weighted avg, green means at or above it. Date color: green = within 1 month, yellow = 1-2 months, red = 2+ months.">?</span>
-    </h3>
-    {% set ns = namespace(any_sales=false) %}
-    {% for condition in condition_order %}
-      {% set s = sales.get(condition) %}
-      {% if s %}
-        {% set ns.any_sales = true %}
-        <div class="sales-block">
-          <h4>{{ condition }}</h4>
-          {% set stats = sales_stats.get(condition) %}
-          {% if stats %}
-            <div class="sales-stats">
-              Weighted avg: <strong>${{ "%.2f"|format(stats.weighted_avg) }}</strong>
-              &middot; Simple avg: ${{ "%.2f"|format(stats.simple_avg) }}
-            </div>
+        <div class="error" style="background:#1d2a3a; border-color:#2b4a6b; color:#bcd9f5;">
+          {% if printing_filter %}
+            Showing only <strong>{{ printing_filter|replace('|', ' / ') }}</strong> listings and sales.
+          {% else %}
+            Prices below mix all printings together ({{ printing_options|join(', ') }}) —
+            choose one in the Printing menu above to separate them.
           {% endif %}
-          <table>
-            <thead>
-              <tr><th>Date</th><th>Total</th><th>CAD</th><th>USD</th></tr>
-            </thead>
-            <tbody>
-              {% for sale in s %}
-                {% set days = sale.days_ago %}
-                {% if days is none %}
-                  {% set recency_class = '' %}
-                {% elif days <= 30 %}
-                  {% set recency_class = 'recency-fresh' %}
-                {% elif days <= 60 %}
-                  {% set recency_class = 'recency-month' %}
-                {% else %}
-                  {% set recency_class = 'recency-stale' %}
-                {% endif %}
-                <tr>
-                  <td class="{{ recency_class }}">{{ sale.date[:10] if sale.date else '—' }}</td>
-                  <td class="total-value">
-                    ${{ "%.2f"|format(sale.total) }}
-                    {% if sale.diff > 0 %}
-                      <span class="diff-pos">(+${{ "%.2f"|format(sale.diff) }})</span>
-                    {% else %}
-                      <span class="diff-neg">({{ "-$%.2f"|format(-sale.diff) if sale.diff < 0 else "+$0.00" }})</span>
-                    {% endif %}
-                  </td>
-                  <td>${{ "%.2f"|format(sale.cad) }}</td>
-                  <td>${{ "%.2f"|format(sale.usd) }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
         </div>
       {% endif %}
-    {% endfor %}
-    {% if not ns.any_sales %}
-      <p class="none">No recent sales data returned for this card.</p>
-    {% endif %}
+
+      <h3 class="section-title">Lowest current listing (price + shipping)
+        <span class="info-icon" tabindex="0" title="USD = listing price + shipping. CAD = USD x the current exchange rate ({{ '%.4f'|format(fx_rate) }}). Total = CAD x 1.0875 (NY sales tax). The (+/-$) beside Total compares the lowest current listing's Total to the weighted average of recent sales for that condition: red (+) means the listing costs more than recent sales, green (-) means it costs less.">?</span>
+      </h3>
+      <table>
+        <thead>
+          <tr><th>Condition</th><th>Total</th><th>CAD</th><th>USD</th></tr>
+        </thead>
+        <tbody>
+          {% for condition in condition_order %}
+            {% set l = listings.get(condition) %}
+            <tr>
+              <td>{{ condition }}{% if l and l.url is defined and l.url %} <a class="ext-link" href="{{ l.url }}" target="_blank" rel="noopener" title="{{ l.title }}">&#8599;</a>{% endif %}</td>
+              {% if l %}
+                <td class="total-value">
+                  ${{ "%.2f"|format(l.total) }}
+                  {# lowest current listing minus the weighted avg of recent sales: + (red) = pricier than recent sales #}
+                  {% if l.diff is defined and l.diff is not none %}
+                    {% if l.diff > 0 %}
+                      <span class="diff-pos">(+${{ "%.2f"|format(l.diff) }})</span>
+                    {% elif l.diff < 0 %}
+                      <span class="diff-neg">(-${{ "%.2f"|format(-l.diff) }})</span>
+                    {% else %}
+                      <span class="diff-neg">(+$0.00)</span>
+                    {% endif %}
+                  {% endif %}
+                </td>
+                <td>${{ "%.2f"|format(l.cad) }}</td>
+                <td>${{ "%.2f"|format(l.usd) }}{% if l.shipping_known is defined and not l.shipping_known %}*{% endif %}</td>
+              {% else %}
+                <td class="none" colspan="3">No live listings</td>
+              {% endif %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <h3 class="section-title">Recent sales
+        <span class="info-icon" tabindex="0" title="Weighted avg favors recent sales: a sale's weight shrinks with every day since it sold, down to 15% of a same-day sale's weight at 90 days old. Simple avg counts every sale equally. Date color: green = within 1 month, yellow = 1-2 months, red = 2+ months.">?</span>
+      </h3>
+      {% set ns = namespace(any_sales=false) %}
+      {% for condition in condition_order %}
+        {% set s = sales.get(condition) %}
+        {% if s %}
+          {% set ns.any_sales = true %}
+          <div class="sales-block">
+            <h4>{{ condition }}</h4>
+            {% set stats = sales_stats.get(condition) %}
+            {% if stats %}
+              <div class="sales-stats">
+                Weighted avg: <strong>${{ "%.2f"|format(stats.weighted_avg) }}</strong>
+                &middot; Simple avg: ${{ "%.2f"|format(stats.simple_avg) }}
+              </div>
+            {% endif %}
+            <table>
+              <thead>
+                <tr><th>Date</th><th>Total</th><th>CAD</th><th>USD</th></tr>
+              </thead>
+              <tbody>
+                {% for sale in s %}
+                  {% set days = sale.days_ago %}
+                  {% if days is none %}
+                    {% set recency_class = '' %}
+                  {% elif days <= 30 %}
+                    {% set recency_class = 'recency-fresh' %}
+                  {% elif days <= 60 %}
+                    {% set recency_class = 'recency-month' %}
+                  {% else %}
+                    {% set recency_class = 'recency-stale' %}
+                  {% endif %}
+                  <tr>
+                    <td class="{{ recency_class }}">{{ sale.date[:10] if sale.date else '—' }}</td>
+                    <td class="total-value">${{ "%.2f"|format(sale.total) }}</td>
+                    <td>${{ "%.2f"|format(sale.cad) }}</td>
+                    <td>${{ "%.2f"|format(sale.usd) }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% endif %}
+      {% endfor %}
+      {% if not ns.any_sales %}
+        <p class="none">No recent sales data returned for this card.</p>
+      {% endif %}
+    </div>
+
+    <div id="panel-ebay" {% if tab != 'ebay' %}hidden{% endif %}>
+      {# Shows "Loading…" in each row until the background fetch below replaces it. #}
+      <div id="ebay-content" data-url="{{ ebay_panel_url }}">
+        {% with loading=True, listings=None %}{% include "_ebay_panel.html" %}{% endwith %}
+      </div>
+    </div>
   </div>
+
+  <script>
+    (function () {
+      var tabs = document.querySelectorAll(".source-toggle a");
+      var panels = {
+        tcgplayer: document.getElementById("panel-tcgplayer"),
+        ebay: document.getElementById("panel-ebay")
+      };
+      function show(name) {
+        Object.keys(panels).forEach(function (k) { panels[k].hidden = (k !== name); });
+        tabs.forEach(function (a) {
+          var on = a.dataset.tab === name;
+          a.classList.toggle("active", on);
+          if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+        });
+      }
+      tabs.forEach(function (a) {
+        a.addEventListener("click", function (e) { e.preventDefault(); show(a.dataset.tab); });
+      });
+
+      // Start the eBay lookup as soon as the page loads, in the background.
+      // The eBay tab already shows "Loading…" in each row; the real rows
+      // replace it when this returns, whether or not the tab is open.
+      var box = document.getElementById("ebay-content");
+      function loadEbay() {
+        fetch(box.dataset.url, { credentials: "same-origin" })
+          .then(function (r) {
+            if (r.redirected) { location.reload(); return null; }  // session expired -> login page
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.text();
+          })
+          .then(function (html) { if (html !== null) box.innerHTML = html; })
+          .catch(function () {
+            box.querySelectorAll(".loading").forEach(function (td) { td.textContent = "Unavailable"; });
+            box.insertAdjacentHTML("afterbegin",
+              '<div class="error" id="ebay-fail">eBay lookup failed. <a href="#" id="ebay-retry">Retry</a></div>');
+            document.getElementById("ebay-retry").addEventListener("click", function (e) {
+              e.preventDefault();
+              document.getElementById("ebay-fail").remove();
+              box.querySelectorAll(".loading").forEach(function (td) { td.innerHTML = "Loading&hellip;"; });
+              loadEbay();
+            });
+          });
+      }
+      loadEbay();
+    })();
+  </script>
 </body>
 </html>

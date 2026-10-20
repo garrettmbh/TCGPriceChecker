@@ -29,18 +29,18 @@
     <div class="candidate-list">
       {% for c in candidates %}
         <a class="candidate"
-           data-price="{{ c.market_price if c.market_price is not none else '' }}"
+           data-price="{{ c.market_total if c.market_total else '' }}"
            data-release="{{ c.set_release_ord if c.set_release_ord is not none else '' }}"
            data-set="{{ c.set_id if c.set_id is not none else '' }}"
            data-number="{{ c.number }}"
-           href="{{ url_for('card_detail', product_id=c.product_id, name=c.name, set_name=c.set_name, card_number=c.number, printing=printing) }}">
+           href="{{ url_for('card_detail', product_id=c.product_id, name=c.name, set_name=c.set_name, card_number=c.number, printing=printing, language=language) }}">
           <img src="{{ c.image_url }}" alt="{{ c.name }}" onerror="this.style.visibility='hidden'">
           <div class="info">
             <div class="name">{{ c.name }}{% if c.number %} — #{{ c.number }}{% endif %}</div>
             <div class="set">{{ c.set_name }}{% if c.set_release %} ({{ c.set_release }}){% endif %}{% if c.rarity %} · {{ c.rarity }}{% endif %}</div>
           </div>
-          <div class="price" title="TCGPlayer market price (USD)">
-            {% if c.market_price is not none %}${{ "{:,.2f}".format(c.market_price) }}{% else %}&mdash;{% endif %}
+          <div class="price" {% if c.market_price %}title="TCGPlayer market price ${{ '%.2f'|format(c.market_price) }} USD, converted to CAD plus 8.75% tax"{% endif %}>
+            {% if c.market_total %}${{ "{:,.2f}".format(c.market_total) }}{% else %}&mdash;{% endif %}
           </div>
         </a>
       {% endfor %}

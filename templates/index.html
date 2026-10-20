@@ -18,8 +18,20 @@
 
     <form class="search-form" action="/search" method="get">
       <div>
-        <label for="name">Card name (required)</label>
-        <input type="text" id="name" name="pokemon_card_name" autocomplete="new-password" placeholder="e.g. Charizard" value="{{ name or '' }}" required>
+        <label id="language-label">Language</label>
+        {# English / Japanese: picks TCGPlayer's "Pokemon" vs "Pokemon Japan" product line and eBay's Language filter #}
+        <div class="option-grid" role="radiogroup" aria-labelledby="language-label">
+          {% for value, label in language_choices %}
+            <label class="option-btn">
+              <input type="radio" name="language" value="{{ value }}" {% if value == (language or 'en') %}checked{% endif %}>
+              <span>{{ label }}</span>
+            </label>
+          {% endfor %}
+        </div>
+      </div>
+      <div>
+        <label for="name">Card name</label>
+        <input type="text" id="name" name="pokemon_card_name" autocomplete="new-password" placeholder="e.g. Charizard (optional)" value="{{ name or '' }}">
       </div>
       <div class="row2">
         <div>
@@ -32,33 +44,34 @@
         </div>
       </div>
       <div>
-        <label for="holo_type">Holo / variant</label>
-        <input type="text" id="holo_type" name="holo_type" placeholder="e.g. Holofoil, Reverse Holo" value="{{ holo_type or '' }}">
-      </div>
-      <div class="row2">
-        <div>
-          <label for="edition">Printing</label>
-          <select id="edition" name="edition">
-            {% for value, label in edition_choices %}
-              <option value="{{ value }}" {% if value == edition %}selected{% endif %}>{{ label }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div style="display:flex; align-items:flex-end;">
-          <label class="check" for="holofoil">
-            <input type="hidden" name="holofoil" value="0">
-            <input type="checkbox" id="holofoil" name="holofoil" value="1" {% if holofoil %}checked{% endif %}>
-            Holofoil
-          </label>
+        <label id="printing-label">Printing</label>
+        {# radio buttons styled as a two-column grid of buttons; the checked one is submitted as "edition" #}
+        <div class="option-grid" role="radiogroup" aria-labelledby="printing-label">
+          {% for value, label in edition_choices %}
+            <label class="option-btn">
+              <input type="radio" name="edition" value="{{ value }}" {% if value == (edition or '') %}checked{% endif %}>
+              <span>{{ label }}</span>
+            </label>
+          {% endfor %}
         </div>
       </div>
+      <label class="check" for="holofoil">
+        <input type="hidden" name="holofoil" value="0">
+        <input type="checkbox" id="holofoil" name="holofoil" value="1" {% if holofoil %}checked{% endif %}>
+        Holofoil
+      </label>
       <button type="submit">Search</button>
     </form>
     <script>
-      // Reverse is always holofoil, so the checkbox doesn't apply.
-      const ed = document.getElementById("edition"), holo = document.getElementById("holofoil");
-      function sync() { holo.disabled = (ed.value === "reverse" || ed.value === ""); }
-      ed.addEventListener("change", sync); sync();
+      // Reverse is always holofoil, and "Any printing" has no holo setting, so the checkbox doesn't apply.
+      const radios = document.querySelectorAll('input[name="edition"]'), holo = document.getElementById("holofoil");
+      function sync() {
+        const picked = document.querySelector('input[name="edition"]:checked');
+        const value = picked ? picked.value : "";
+        holo.disabled = (value === "reverse" || value === "");
+      }
+      radios.forEach(function (r) { r.addEventListener("change", sync); });
+      sync();
     </script>
   </div>
 </body>

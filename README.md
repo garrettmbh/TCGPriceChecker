@@ -1,6 +1,6 @@
 # Pokémon Card Price Lookup
 
-Flask app: enter a card name (+ optional set, number, holo type), see the
+Flask app: enter a card name (+ optional set, number, printing), see the
 card image, the current lowest price+shipping per condition, and recent
 sales per condition — all pulled live from TCGPlayer.
 
@@ -97,6 +97,43 @@ browsers forget quickly), lasting 30 days — change `SESSION_LIFETIME_DAYS` in
 and `/logout` works directly too. Cookies are per browser/device, so expect
 one login on each.
 
+## eBay prices (optional)
+
+The results page has a **TCGPlayer | eBay** toggle. The eBay side uses eBay's
+Browse API, which is free. Without credentials the toggle still shows, with a
+"not set up yet" message instead of prices.
+
+1. At developer.ebay.com, open your application's **Keys** page and copy the
+   **Production** keyset: *App ID* (Client ID) and *Cert ID* (Client Secret).
+   If your eBay scanner project already has a Production key, reuse it.
+2. Set them as environment variables (in Northflank: runtime variables):
+   - `EBAY_CLIENT_ID` - the App ID
+   - `EBAY_CLIENT_SECRET` - the Cert ID
+   - `EBAY_MARKETPLACE_ID` - optional, defaults to `EBAY_US`
+   - `EBAY_DELIVERY_ZIP` - optional US ZIP so eBay can quote calculated shipping
+
+What to expect:
+
+- **Active listings only.** eBay has no free sold-items API (the old
+  `findCompletedItems` was shut down in Feb 2025; Marketplace Insights is
+  restricted to approved partners), so the eBay view shows a note where recent
+  sales would be, plus one link per condition that opens eBay's own sold
+  listings (newest first) filtered to that Card Condition. Those links need no
+  API key. If one opens without the condition filter applied, apply the filter
+  on eBay, copy the URL from your browser's address bar, and compare it with
+  `sold_search_url()` in `ebay.py`.
+- **Condition.** eBay search results only say "Ungraded"/"Graded" for cards, so
+  each lookup runs one search per eBay *Card Condition* value (about 4-6 calls,
+  cached for 10 minutes). If eBay doesn't offer that filter for a search, it
+  falls back to one search and guesses conditions from titles; the page says so.
+- **Query.** The card name plus its number from the results-page heading,
+  e.g. `Suicune 14/64`. See `build_query()` in `ebay.py` to change it. The
+  "open on eBay" link under the toggle runs the same search on ebay.com.
+- **Filters.** Buy It Now / Best Offer listings only, raw (ungraded) cards, and
+  the same language filter as TCGPlayer, applied to the listing title and
+  description.
+- **Quota.** eBay's default is 5,000 calls/day per app.
+
 ## A few things worth knowing
 
 - **Terms of Service**: TCGPlayer's ToS restricts automated scraping of
@@ -111,6 +148,13 @@ one login on each.
 - **Ambiguous searches**: if your search matches multiple printings (e.g.
   different sets with the same name), you'll get a picker page instead of
   results.
+
+- **Printing on the search form.** Choosing a printing (Reverse, Unlimited, ...)
+  hides cards that don't have it from the "Multiple matches" list. TCGPlayer's
+  search results don't say which printings a card has, so each candidate is
+  checked with one listings request (up to 6 at a time, cached for hours, 20 s
+  cap). A card whose printings can't be checked is kept, and the page says so.
+  "Has the printing" means it has live listings in that printing right now.
 
 ## Possible next steps
 

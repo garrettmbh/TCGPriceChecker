@@ -27,6 +27,7 @@ import os
 import re
 import requests
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from datetime import date, datetime, timezone
 
 log = logging.getLogger(__name__)
@@ -102,6 +103,46 @@ FOREIGN_LANGUAGE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# --- Language (English / Japanese) -------------------------------------------
+#
+# The UI's language toggle picks which TCGPlayer product line is searched and
+# which language eBay results are limited to.
+#   product_line     TCGPlayer's productLineName filter value (URL-style name)
+#   listing_language TCGPlayer's per-listing "language" filter value
+#   set_category_id  TCGPlayer categoryId used to fetch set release dates
+#                    (Pokemon = 3; Pokemon Japan = 85 -- unverified, see README;
+#                    if wrong, "Set order" sorting falls back to setId)
+#   ebay_language    eBay's "Language" item-specific value
+LANGUAGE_CHOICES = [("en", "English"), ("jp", "Japanese")]
+LANGUAGE_SETTINGS = {
+    "en": {"product_line": "pokemon", "listing_language": "English",
+           "set_category_id": 3, "ebay_language": "English"},
+    "jp": {"product_line": "pokemon-japan", "listing_language": "Japanese",
+           "set_category_id": 85, "ebay_language": "Japanese"},
+}
+DEFAULT_LANGUAGE = "en"
+
+
+def resolve_language(value):
+    """Anything unrecognised (or missing) means English."""
+    return value if value in LANGUAGE_SETTINGS else DEFAULT_LANGUAGE
+
+
+# Same idea as FOREIGN_LANGUAGE_PATTERN, but for Japanese searches: Japanese
+# is now the wanted language, so it's left out and everything else is dropped.
+FOREIGN_LANGUAGE_PATTERN_JP = re.compile(
+    r"\b(korean|korea|kor|kr|chinese|china|chn|cn|prc|spanish|spain|italian)\b",
+    re.IGNORECASE,
+)
+
+
+def foreign_language_pattern(language=DEFAULT_LANGUAGE):
+    """The regex of languages to exclude when `language` is the wanted one."""
+    if resolve_language(language) == "jp":
+        return FOREIGN_LANGUAGE_PATTERN_JP
+    return FOREIGN_LANGUAGE_PATTERN
+
+
 # Confirmed from a real listings response: a seller's custom caption lives
 # at listing["customData"]["title"] and/or listing["customData"]["description"]
 # (that's how "Japanese Suicune" showed up for a mislabeled-as-English listing).
@@ -131,11 +172,11 @@ def _listing_caption_text(listing):
     return " ".join(parts)
 
 
-def _is_foreign_language_listing(listing):
+def _is_foreign_language_listing(listing, language=DEFAULT_LANGUAGE):
     text = _listing_caption_text(listing)
     if not text:
         return False
-    return bool(FOREIGN_LANGUAGE_PATTERN.search(text))
+    return bool(foreign_language_pattern(language).search(text))
 
 
 def _session():
@@ -165,40 +206,41 @@ def _session():
     return s
 
 
-def build_query(name, set_name=None, card_number=None, holo_type=None):
+def build_query(name, set_name=None, card_number=None):
     """Combine the description fields into one search string."""
     parts = [name]
     if set_name:
         parts.append(set_name)
     if card_number:
         parts.append(str(card_number))
-    if holo_type:
-        parts.append(holo_type)
     return " ".join(p for p in parts if p)
 
 
 SEARCH_PAGE_SIZE = 24   # what TCGPlayer's own search page requests
-SEARCH_MAX_PAGES = 3    # up to 72 candidates per query
+SEARCH_MAX_PAGES = 3          # name given: up to 72 candidates per query
+SEARCH_MAX_PAGES_BROWSE = 10  # no name (e.g. a whole set): up to 240
 
 
-def _search_once(session, query):
+def _search_once(session, query, language=DEFAULT_LANGUAGE, max_pages=SEARCH_MAX_PAGES):
     """Run one search query (paged) and return candidate dicts."""
+    lang = LANGUAGE_SETTINGS[resolve_language(language)]
     candidates, seen_ids = [], set()
-    for page in range(SEARCH_MAX_PAGES):
+    for page in range(max_pages):
         payload = {
             "algorithm": "sales_exp_fields_experiment",
             "from": page * SEARCH_PAGE_SIZE,
             "size": SEARCH_PAGE_SIZE,
             "filters": {
-                # Pokemon *cards* only (no sealed product, accessories, etc.)
-                "term": {"productLineName": ["pokemon"], "productTypeName": ["Cards"]},
+                # Pokemon (or Pokemon Japan) *cards* only (no sealed product,
+                # accessories, etc.)
+                "term": {"productLineName": [lang["product_line"]], "productTypeName": ["Cards"]},
                 "range": {},
                 "match": {},
             },
             "listingSearch": {
                 "context": {"cart": {"packages": {}}},
                 "filters": {
-                    "term": {"sellerStatus": "Live", "channelId": 0, "language": ["English"]},
+                    "term": {"sellerStatus": "Live", "channelId": 0, "language": [lang["listing_language"]]},
                     "range": {"quantity": {"gte": 1}},
                     "exclude": {"channelExclusion": 0},
                 },
@@ -296,7 +338,7 @@ SET_RETRY_AFTER_FAILURE_SECONDS = 5 * 60    # don't hammer TCGPlayer if it's fai
 # whichever one actually overlaps the setIds in the current search results.
 _SET_ID_KEYS = ("setNameId", "setId", "id")
 
-_set_cache = {"rows": None, "fetched_at": 0.0, "last_attempt": 0.0}
+_set_caches = {}  # language -> {"rows", "fetched_at", "last_attempt"}
 
 
 def _parse_release_date(value):
@@ -346,11 +388,15 @@ def _find_set_rows(obj, depth=0):
     return None
 
 
-def _load_sets():
+def _load_sets(language=DEFAULT_LANGUAGE):
     """Cached [{"ids": {key: int}, "date": date|None}, ...] from SetNames.
     On failure, keeps serving the last good (possibly stale) list; returns []
     if there's never been one. Never raises — sorting is a nicety and must
-    not break a search."""
+    not break a search. Cached separately per language (English and Japanese
+    sets live in different TCGPlayer categories)."""
+    language = resolve_language(language)
+    _set_cache = _set_caches.setdefault(
+        language, {"rows": None, "fetched_at": 0.0, "last_attempt": 0.0})
     now = time.time()
     rows = _set_cache["rows"]
     if rows is not None and (now - _set_cache["fetched_at"]) < SET_CACHE_TTL_SECONDS:
@@ -361,7 +407,8 @@ def _load_sets():
     _set_cache["last_attempt"] = now
     try:
         headers = {k: v for k, v in HEADERS.items() if k != "Content-Type"}
-        resp = requests.get(SET_NAMES_URL, params={"categoryId": 3, "mpfev": 5616},
+        resp = requests.get(SET_NAMES_URL, params={"categoryId": LANGUAGE_SETTINGS[language]["set_category_id"],
+                                    "mpfev": 5616},
                             headers=headers, timeout=10)
         resp.raise_for_status()
         raw = _find_set_rows(resp.json())
@@ -385,7 +432,7 @@ def _load_sets():
         return rows or []
 
 
-def annotate_release_dates(candidates):
+def annotate_release_dates(candidates, language=DEFAULT_LANGUAGE):
     """Adds set_release (ISO date string) and set_release_ord (sortable int)
     to each candidate whose set is found; leaves them None otherwise."""
     for c in candidates:
@@ -394,7 +441,7 @@ def annotate_release_dates(candidates):
     wanted = {c["set_id"] for c in candidates if c.get("set_id")}
     if not wanted:
         return
-    rows = _load_sets()
+    rows = _load_sets(language)
     if not rows:
         return
     best_key, best_hits = None, 0
@@ -414,39 +461,162 @@ def annotate_release_dates(candidates):
             c["set_release_ord"] = d.toordinal()
 
 
-def find_candidates(name, set_name=None, card_number=None, holo_type=None):
+# --- Hiding cards that don't have the chosen printing ------------------------
+#
+# TCGPlayer's search results don't say which printings a card has, so when a
+# printing is chosen we ask each candidate's listings. That's one request per
+# candidate (cached for hours, run a few at a time, with an overall time cap).
+# If a card's printings can't be determined, it is KEPT rather than hidden.
+
+PRINTING_CHECK_WORKERS = 6
+PRINTING_CHECK_TIMEOUT_SECONDS = 20
+
+
+def get_product_printings(product_id, session=None):
+    """
+    The printings a product currently has live listings for, e.g.
+    {"Normal", "Reverse Holofoil"}. Cached. Raises TCGScraperError when it
+    can't be determined reliably (the caller then keeps the card).
+    """
+    product_id = int(float(product_id))
+    cached = _cached_printings(product_id)
+    if cached is not None:
+        return set(cached)
+    payload = {
+        "filters": {
+            "term": {"sellerStatus": "Live", "channelId": 0},
+            "range": {"quantity": {"gte": 1}},
+            "exclude": {"channelExclusion": 0},
+        },
+        "from": 0,
+        "size": LISTINGS_PAGE_SIZE,
+        "sort": {"field": "price+shipping", "order": "asc"},
+        "context": {"cart": {"packages": {}}, "shippingCountry": "US"},
+    }
+    s = session or _session()
+    resp = s.post(LISTINGS_URL.format(product_id=product_id), json=payload, timeout=15)
+    if resp.status_code != 200:
+        raise TCGScraperError(f"Printings check failed ({resp.status_code}) for product {product_id}.")
+    try:
+        block = resp.json()["results"][0]
+        rows = block.get("results") or []
+    except (KeyError, IndexError, TypeError, ValueError):
+        raise TCGScraperError(f"Unexpected listings response for product {product_id}.")
+    facet = {a["value"] for a in (block.get("aggregations") or {}).get("printing", []) or [] if a.get("value")}
+    seen = {r["printing"] for r in rows if r.get("printing")}
+    if not facet and len(rows) >= LISTINGS_PAGE_SIZE:
+        # No printing breakdown and a full page of results: a printing that only
+        # appears beyond the cheapest listings can't be ruled out.
+        raise TCGScraperError(f"Can't rule out printings for product {product_id}.")
+    found = facet | seen
+    _store_printings(product_id, found, allow_empty=True)
+    return found
+
+
+def filter_candidates_by_printing(candidates, printing_filter, session=None):
+    """
+    Keep candidates that have `printing_filter` (an exact printing name).
+    Returns (kept, hidden_count, unchecked_count); unchecked ones are kept.
+    """
+    if not printing_filter or not candidates:
+        return list(candidates), 0, 0
+    session = session or _session()  # one session (one cookie-priming request) for every check
+
+    known = {}  # product_id -> set of printings; missing = couldn't be checked
+    pending = []
+    for c in candidates:
+        cached = _cached_printings(c["product_id"])
+        if cached is not None:
+            known[c["product_id"]] = set(cached)
+        else:
+            pending.append(c["product_id"])
+
+    if pending:
+        pool = ThreadPoolExecutor(max_workers=PRINTING_CHECK_WORKERS)
+        futures = {pool.submit(get_product_printings, pid, session): pid for pid in pending}
+        try:
+            for fut in as_completed(futures, timeout=PRINTING_CHECK_TIMEOUT_SECONDS):
+                try:
+                    known[futures[fut]] = fut.result()
+                except Exception as e:
+                    log.warning("Printing check for product %s failed: %s", futures[fut], e)
+        except FuturesTimeout:
+            log.warning("Printing checks timed out; keeping the cards not yet checked")
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    kept, hidden, unchecked = [], 0, 0
+    for c in candidates:
+        printings = known.get(c["product_id"])
+        if printings is None:
+            kept.append(c)
+            unchecked += 1
+        elif any(_matches_printing(p, printing_filter) for p in printings):
+            kept.append(c)
+        else:
+            hidden += 1
+    return kept, hidden, unchecked
+
+
+def find_candidates(name, set_name=None, card_number=None, printing_filter=None, report=None,
+                    language=DEFAULT_LANGUAGE):
     """
     Search from most to least specific until something matches:
-      1. name + set + number + holo type   (the full description)
+      1. name + set + number   (the full description)
       2. name + set
       3. name only
     Results are always narrowed locally by set/number (see _filter_candidates).
-    Returns (candidates, note); note explains when a broader search was used.
+    If printing_filter is given (an exact TCGPlayer printing name such as
+    "Reverse Holofoil"), cards without that printing are left out. If `report`
+    is a dict, it's filled in with {"hidden": n} so a caller can explain an
+    empty result. Returns (candidates, note); note explains broader searches
+    and hidden cards.
     """
     s = _session()
     queries = []
     for q in (
-        build_query(name, set_name, card_number, holo_type),
+        build_query(name, set_name, card_number),
         build_query(name, set_name),
         build_query(name),
     ):
-        if q not in queries:
+        if q and q not in queries:
             queries.append(q)
 
+    pages = SEARCH_MAX_PAGES if name else SEARCH_MAX_PAGES_BROWSE
+    label = printing_label(printing_filter)
+    emptied_by_printing = False  # an earlier, more specific search found cards, but none had the printing
     for i, q in enumerate(queries):
-        found = _filter_candidates(_search_once(s, q), set_name, card_number)
-        if found:
-            note = None if i == 0 else (
-                f'No results for "{queries[0]}", so these are results for "{q}".'
-            )
-            annotate_release_dates(found)
-            return found, note
+        found = _filter_candidates(_search_once(s, q, language, max_pages=pages), set_name, card_number)
+        if not found:
+            continue
+        notes = []
+        if printing_filter:
+            found, hidden, unchecked = filter_candidates_by_printing(found, printing_filter, session=s)
+            if report is not None:
+                report["hidden"] = max(report.get("hidden", 0), hidden)
+            if not found:
+                emptied_by_printing = True
+                continue  # every card lacked the printing; a broader query may find others
+        else:
+            hidden = unchecked = 0
+        if i and emptied_by_printing:
+            notes.append(f'None of the cards for "{queries[0]}" have a {label} printing, '
+                         f'so these are results for "{q}".')
+        elif i:
+            notes.append(f'No results for "{queries[0]}", so these are results for "{q}".')
+        if printing_filter:
+            if hidden:
+                notes.append(f"Showing only cards with a {label} printing ({hidden} hidden).")
+            if unchecked:
+                notes.append(f"Couldn't check the printings of {unchecked}, so they're included.")
+        annotate_release_dates(found, language)
+        return found, (" ".join(notes) or None)
     return [], None
 
 
-def search_products(name, set_name=None, card_number=None, holo_type=None):
+def search_products(name, set_name=None, card_number=None):
     """Candidates only (see find_candidates for the explanatory note)."""
-    return find_candidates(name, set_name, card_number, holo_type)[0]
+    return find_candidates(name, set_name, card_number)[0]
 
 
 # From TCGPlayer's categoryfilters endpoint (Pokemon, categoryId=3). Static
@@ -464,9 +634,8 @@ PRINTING_VARIANT_IDS = {
 
 EDITION_CHOICES = [
     ("", "Any printing"),
-    ("standard", "Standard (no edition)"),
+    ("standard", "Standard / Unlimited"),
     ("reverse", "Reverse"),
-    ("unlimited", "Unlimited"),
     ("1st", "1st Edition"),
 ]
 
@@ -484,23 +653,32 @@ def resolve_printing(edition, holofoil=True):
         return None
     if edition == "reverse":
         return "Reverse Holofoil"
-    base = {"unlimited": "Unlimited", "1st": "1st Edition"}.get(edition)
-    if base:
-        return f"{base} Holofoil" if holofoil else base
-    if edition == "standard":
-        return "Holofoil" if holofoil else "Normal"
+    if edition == "1st":
+        return "1st Edition Holofoil" if holofoil else "1st Edition"
+    if edition in ("standard", "unlimited"):  # "unlimited" kept so old URLs still work
+        return "Holofoil|Unlimited Holofoil" if holofoil else "Normal|Unlimited"
     return None
 
 
+def _printing_names(printing_filter):
+    """A printing filter can name several printings, joined by '|'."""
+    return [p.strip() for p in (printing_filter or "").split("|") if p.strip()]
+
+
+def printing_label(printing_filter):
+    return " or ".join(_printing_names(printing_filter))
+
+
 def _matches_printing(listing_printing, printing_filter):
-    """Exact (case-insensitive) match. Substring matching no longer works
-    now that "Holofoil" alone is a real printing distinct from
-    "Unlimited Holofoil"."""
+    """Exact (case-insensitive) match against any of the filter's printing
+    names. Substring matching doesn't work because "Holofoil" alone is a real
+    printing distinct from "Unlimited Holofoil"."""
     if not printing_filter:
         return True
     if not listing_printing:
         return False
-    return printing_filter.strip().lower() == listing_printing.strip().lower()
+    have = listing_printing.strip().lower()
+    return any(have == n.lower() for n in _printing_names(printing_filter))
 
 
 LISTINGS_PAGE_SIZE = 50
@@ -518,19 +696,24 @@ PRINTINGS_CACHE_TTL_SECONDS = 6 * 60 * 60
 _printings_cache = {}  # product_id -> {"printings": [...], "ts": float}
 
 
+PRINTINGS_EMPTY_TTL_SECONDS = 30 * 60  # "no live listings" can change soon; re-check sooner
+
+
 def _cached_printings(product_id):
     entry = _printings_cache.get(product_id)
-    if entry and (time.time() - entry["ts"]) < PRINTINGS_CACHE_TTL_SECONDS:
-        return entry["printings"]
+    if entry:
+        ttl = PRINTINGS_CACHE_TTL_SECONDS if entry["printings"] else PRINTINGS_EMPTY_TTL_SECONDS
+        if (time.time() - entry["ts"]) < ttl:
+            return entry["printings"]
     return None
 
 
-def _store_printings(product_id, printings):
-    if printings:
+def _store_printings(product_id, printings, allow_empty=False):
+    if printings or allow_empty:
         _printings_cache[product_id] = {"printings": sorted(set(printings)), "ts": time.time()}
 
 
-def get_current_listings(product_id, printing_filter=None):
+def get_current_listings(product_id, printing_filter=None, language=DEFAULT_LANGUAGE):
     """
     Fetch current live listings for a product, grouped by condition, with
     the lowest total (price + shipping) per condition.
@@ -577,7 +760,7 @@ def get_current_listings(product_id, printing_filter=None):
             # filters.term.printing = ["<exact printing name>"]. If it's ever
             # rejected we fall back to unfiltered requests plus the
             # client-side check below.
-            payload["filters"]["term"]["printing"] = [printing_filter]
+            payload["filters"]["term"]["printing"] = _printing_names(printing_filter)
         return s.post(url, json=payload, timeout=15)
 
     server_filtered = bool(printing_filter)
@@ -617,7 +800,7 @@ def get_current_listings(product_id, printing_filter=None):
                 continue
             if not _matches_printing(listing.get("printing"), printing_filter):
                 continue
-            if _is_foreign_language_listing(listing):
+            if _is_foreign_language_listing(listing, language):
                 continue
             price = _unwrap_number(listing.get("price", 0))
             shipping = _unwrap_number(listing.get("shippingPrice", 0))
@@ -648,6 +831,7 @@ def get_current_listings(product_id, printing_filter=None):
         try:
             r = fetch_page(0, False)
             if r.status_code != 200:
+                log.warning("Printings lookup for product %s got HTTP %s", product_id, r.status_code)
                 return set()
             blk = r.json()["results"][0]
             found = set()
@@ -658,7 +842,8 @@ def get_current_listings(product_id, printing_filter=None):
                 if listing.get("printing"):
                     found.add(listing["printing"])
             return found
-        except Exception:
+        except Exception as e:
+            log.warning("Printings lookup for product %s failed: %s", product_id, e)
             return set()  # the dropdown is a nicety; never fail the lookup over it
 
     if not printing_filter or not server_filtered:
@@ -704,10 +889,11 @@ def get_latest_sales(product_id, printing_filter=None, limit_per_condition=5):
     }
     s = _session()
     resp = None
-    variant_id = PRINTING_VARIANT_IDS.get(printing_filter) if printing_filter else None
-    if variant_id:
-        # Server-side filter by variant id; fall back to unfiltered if rejected.
-        filtered_payload = dict(payload, variants=[variant_id])
+    variant_ids = [PRINTING_VARIANT_IDS[n] for n in _printing_names(printing_filter)
+                   if n in PRINTING_VARIANT_IDS]
+    if variant_ids:
+        # Server-side filter by variant ids; fall back to unfiltered if rejected.
+        filtered_payload = dict(payload, variants=variant_ids)
         resp = s.post(url, json=filtered_payload, timeout=15)
         if resp.status_code != 200:
             resp = None
@@ -752,29 +938,35 @@ def get_latest_sales(product_id, printing_filter=None, limit_per_condition=5):
     return by_condition
 
 
-def lookup_card(name, set_name=None, card_number=None, holo_type=None, printing_filter=None):
+def lookup_card(name, set_name=None, card_number=None, printing_filter=None,
+                language=DEFAULT_LANGUAGE):
     """
     High-level helper: search, and if there's a single clear match, fetch
     full details. Returns either:
       {"status": "ambiguous", "candidates": [...]}
-      {"status": "not_found"}
+      {"status": "not_found", "hidden_by_printing": int}  # cards found but lacking the printing
       {"status": "ok", "product": {...}, "listings": {...},
        "available_printings": [...], "sales": {...}}
     """
-    candidates, note = find_candidates(name, set_name, card_number, holo_type)
+    report = {}
+    candidates, note = find_candidates(name, set_name, card_number,
+                                       printing_filter=printing_filter, report=report,
+                                       language=language)
     if not candidates:
-        return {"status": "not_found"}
+        return {"status": "not_found", "hidden_by_printing": report.get("hidden", 0)}
     if len(candidates) > 1:
         return {"status": "ambiguous", "candidates": candidates, "note": note}
-    result = get_card_details(candidates[0], printing_filter=printing_filter)
+    result = get_card_details(candidates[0], printing_filter=printing_filter,
+                              language=language)
     result["note"] = note
     return result
 
 
-def get_card_details(candidate, printing_filter=None):
+def get_card_details(candidate, printing_filter=None, language=DEFAULT_LANGUAGE):
     """Given one candidate dict (from search_products), fetch listings + sales."""
     product_id = candidate["product_id"]
-    listings_result = get_current_listings(product_id, printing_filter=printing_filter)
+    listings_result = get_current_listings(product_id, printing_filter=printing_filter,
+                                           language=language)
     sales = get_latest_sales(product_id, printing_filter=printing_filter)
     return {
         "status": "ok",
