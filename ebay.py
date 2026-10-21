@@ -49,6 +49,7 @@ log = logging.getLogger(__name__)
 TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 OAUTH_SCOPE = "https://api.ebay.com/oauth/api_scope"
+EBAY_SITE = "https://www.ebay.ca"  # every link we build or rewrite points here
 CCG_CATEGORY_ID = "183454"  # Toys & Hobbies > Collectible Card Games > CCG Individual Cards
 
 # Row labels, in display order.
@@ -238,7 +239,7 @@ def search_url(query, language=tcg_scraper.DEFAULT_LANGUAGE):
     """The same search on ebay.com (cheapest first), for a quick visual check."""
     from urllib.parse import urlencode
     # eBay's website writes aspect filters double-encoded (see sold_search_url).
-    return ("https://www.ebay.com/sch/i.html?" + urlencode(
+    return (f"{EBAY_SITE}/sch/i.html?" + urlencode(
         {"_nkw": query, "_sacat": CCG_CATEGORY_ID, "_sop": "15", "LH_BIN": "1"})
         + f"&Language={quote(quote(_language_name(language), safe=''), safe='')}")
 
@@ -282,7 +283,7 @@ def sold_search_url(query, condition, values=None, language=tcg_scraper.DEFAULT_
     chosen = values or DEFAULT_CONDITION_VALUES[condition]
     base = urlencode({"_nkw": query, "_sacat": CCG_CATEGORY_ID,
                       "LH_Sold": "1", "LH_Complete": "1", "_sop": "13"})
-    return (f"https://www.ebay.com/sch/i.html?{base}"
+    return (f"{EBAY_SITE}/sch/i.html?{base}"
             f"&Card%2520Condition={'%7C'.join(double(v) for v in chosen)}"
             f"&Language={double(_language_name(language))}")
 
@@ -327,6 +328,11 @@ def _to_usd(value, currency):
     return None
 
 
+def _to_ebay_ca(url):
+    """The Browse API returns ebay.com item links; point them at ebay.ca."""
+    return re.sub(r"^https?://(www\.)?ebay\.com", EBAY_SITE, url, flags=re.I) if url else url
+
+
 def _item_to_listing(item, language=tcg_scraper.DEFAULT_LANGUAGE):
     """One item summary -> the same shape the TCGPlayer listings use, or None to skip it."""
     if str(item.get("conditionId")) == GRADED_CONDITION_ID:
@@ -358,7 +364,7 @@ def _item_to_listing(item, language=tcg_scraper.DEFAULT_LANGUAGE):
         "shipping_known": shipping_known,
         "seller": (item.get("seller") or {}).get("username", "unknown"),
         "title": title,
-        "url": item.get("itemWebUrl"),
+        "url": _to_ebay_ca(item.get("itemWebUrl")),
     }
 
 
