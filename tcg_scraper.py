@@ -27,6 +27,8 @@ import os
 import re
 import requests
 import time
+import unicodedata
+from urllib.parse import urlencode, quote_plus
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from datetime import date, datetime, timezone
 
@@ -36,6 +38,12 @@ SEARCH_URL = "https://mp-search-api.tcgplayer.com/v1/search/request"
 LISTINGS_URL = "https://mp-search-api.tcgplayer.com/v1/product/{product_id}/listings"
 LATEST_SALES_URL = "https://mpapi.tcgplayer.com/v2/product/{product_id}/latestsales"
 PRODUCT_PAGE_URL = "https://www.tcgplayer.com/product/{product_id}"
+def condition_url(product_id, condition):
+    """TCGPlayer product page pre-filtered to one condition (…?Condition=Lightly+Played)."""
+    return (PRODUCT_PAGE_URL.format(product_id=product_id) + "?"
+            + urlencode({"Condition": condition}, quote_via=quote_plus))
+
+
 SET_NAMES_URL = "https://mpapi.tcgplayer.com/v2/Catalog/SetNames"
 
 HEADERS = {
@@ -217,7 +225,7 @@ def build_query(name, set_name=None, card_number=None):
 
 
 SEARCH_PAGE_SIZE = 24   # what TCGPlayer's own search page requests
-SEARCH_MAX_PAGES = 3          # name given: up to 72 candidates per query
+SEARCH_MAX_PAGES = 8          # name given: up to 72 candidates per query
 SEARCH_MAX_PAGES_BROWSE = 10  # no name (e.g. a whole set): up to 240
 
 
@@ -299,7 +307,21 @@ def _norm_number(value):
     return str(int(n)) if n.isdigit() else n
 
 
-def _filter_candidates(candidates, set_name, card_number):
+def _name_tokens(text):
+    """Lowercase, accent-free word set: 'Pokémon Farfetch\'d-GX' -> {'pokemon','farfetchd','gx'}."""
+    text = unicodedata.normalize("NFKD", str(text or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch)).lower()
+    text = re.sub(r"['\u2019`]", "", text)          # farfetch'd -> farfetchd
+    return set(re.sub(r"[^a-z0-9]+", " ", text).split())
+
+
+def _name_matches(product_name, wanted_name):
+    """True if every word of the searched card name appears in the product's name."""
+    want = _name_tokens(wanted_name)
+    return bool(want) and want <= _name_tokens(product_name)
+
+
+def _filter_candidates(candidates, set_name, card_number, name=None):
     """
     Narrow results locally by card number and set name. Matching happens
     here rather than in the search text because number formats vary
@@ -308,6 +330,10 @@ def _filter_candidates(candidates, set_name, card_number):
     the list.
     """
     out = candidates
+    if name:
+        # Strict on purpose (no fallback): TCGPlayer's fuzzy search matches the
+        # text against every field, so keep only cards whose NAME matches.
+        out = [c for c in out if _name_matches(c["name"], name)]
     if card_number:
         want = _norm_number(card_number)
         narrowed = [c for c in out if _norm_number(c["number"]) == want]
@@ -586,7 +612,7 @@ def find_candidates(name, set_name=None, card_number=None, printing_filter=None,
     label = printing_label(printing_filter)
     emptied_by_printing = False  # an earlier, more specific search found cards, but none had the printing
     for i, q in enumerate(queries):
-        found = _filter_candidates(_search_once(s, q, language, max_pages=pages), set_name, card_number)
+        found = _filter_candidates(_search_once(s, q, language, max_pages=pages), set_name, card_number, name)
         if not found:
             continue
         notes = []
@@ -812,6 +838,8 @@ def get_current_listings(product_id, printing_filter=None, language=DEFAULT_LANG
                     "price": round(price, 2),
                     "shipping": round(shipping, 2),
                     "seller": listing.get("sellerName", "unknown"),
+                    "url": condition_url(product_id, condition),
+                    "title": f"View {condition} listings on TCGPlayer",
                 }
 
         page += 1
