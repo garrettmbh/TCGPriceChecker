@@ -38,10 +38,26 @@ SEARCH_URL = "https://mp-search-api.tcgplayer.com/v1/search/request"
 LISTINGS_URL = "https://mp-search-api.tcgplayer.com/v1/product/{product_id}/listings"
 LATEST_SALES_URL = "https://mpapi.tcgplayer.com/v2/product/{product_id}/latestsales"
 PRODUCT_PAGE_URL = "https://www.tcgplayer.com/product/{product_id}"
-def condition_url(product_id, condition):
-    """TCGPlayer product page pre-filtered to one condition (…?Condition=Lightly+Played)."""
+
+def condition_url(product_id, condition, printing_filter=None):
+    """Product page pre-filtered to one condition and, if given, the printing(s):
+    ...?Printing=Unlimited+Holofoil&Condition=Lightly+Played"""
+    params = []
+    names = _printing_names(printing_filter)
+    if names:
+        params.append(("Printing", "|".join(names)))
+    params.append(("Condition", condition))
     return (PRODUCT_PAGE_URL.format(product_id=product_id) + "?"
-            + urlencode({"Condition": condition}, quote_via=quote_plus))
+            + urlencode(params, quote_via=quote_plus))
+
+
+def product_url(product_id, printing_filter=None):
+    """Product page, filtered to the selected printing(s) when there is one."""
+    base = PRODUCT_PAGE_URL.format(product_id=product_id)
+    names = _printing_names(printing_filter)
+    if not names:
+        return base
+    return base + "?" + urlencode({"Printing": "|".join(names)}, quote_via=quote_plus)
 
 
 SET_NAMES_URL = "https://mpapi.tcgplayer.com/v2/Catalog/SetNames"
@@ -659,8 +675,7 @@ PRINTING_VARIANT_IDS = {
 }
 
 EDITION_CHOICES = [
-    ("", "Any printing"),
-    ("standard", "Standard / Unlimited"),
+    ("standard", "Normal"),
     ("reverse", "Reverse"),
     ("1st", "1st Edition"),
 ]
@@ -838,7 +853,7 @@ def get_current_listings(product_id, printing_filter=None, language=DEFAULT_LANG
                     "price": round(price, 2),
                     "shipping": round(shipping, 2),
                     "seller": listing.get("sellerName", "unknown"),
-                    "url": condition_url(product_id, condition),
+                    "url": condition_url(product_id, condition, printing_filter),
                     "title": f"View {condition} listings on TCGPlayer",
                 }
 

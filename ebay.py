@@ -198,7 +198,18 @@ def _clean_text(text):
     return " ".join(base.split())
 
 
-def build_query(name, number=None, language=tcg_scraper.DEFAULT_LANGUAGE, set_name=None):
+def _edition_term(printing):
+    """Extra search word for the selected printing: 'reverse' / '1st edition'."""
+    names = [n.lower() for n in tcg_scraper._printing_names(printing)]
+    if any(n.startswith("1st edition") for n in names):
+        return "1st edition"
+    if any(n == "reverse holofoil" for n in names):
+        return "reverse"
+    return ""
+
+
+def build_query(name, number=None, language=tcg_scraper.DEFAULT_LANGUAGE, set_name=None,
+                printing=None):
     """
     The eBay search text: card name + card number. If the card has no number,
     card name + set name instead. Brackets and dashes are removed because eBay
@@ -222,6 +233,9 @@ def build_query(name, number=None, language=tcg_scraper.DEFAULT_LANGUAGE, set_na
         set_text = _clean_text(set_name)
         if set_text and set_text.lower() not in base.lower():
             base = f"{base} {set_text}".strip()
+    term = _edition_term(printing)
+    if term and term not in base.lower():
+        base = f"{base} {term}"
     return base
 
 
