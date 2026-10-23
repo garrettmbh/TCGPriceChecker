@@ -31,16 +31,16 @@
       </div>
       <div>
         <label for="name">Card name</label>
-        <input type="text" id="name" name="pokemon_card_name" autocomplete="new-password" placeholder="e.g. Charizard (optional)" value="{{ name or '' }}">
+        <input type="text" id="name" name="pokemon_card_name" autocomplete="new-password" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore placeholder="e.g. Charizard (optional)" value="{{ name or '' }}">
       </div>
       <div class="row2">
         <div>
           <label for="set_name">Set name</label>
-          <input type="text" id="set_name" name="set_name" placeholder="e.g. Base Set" value="{{ set_name or '' }}">
+          <input type="text" id="set_name" name="set_name" autocomplete="new-password" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore placeholder="e.g. Base Set" value="{{ set_name or '' }}">
         </div>
         <div>
           <label for="card_number">Card number</label>
-          <input type="text" id="card_number" name="pokemon_card_number" autocomplete="new-password" placeholder="e.g. 4/102" value="{{ card_number or '' }}">
+          <input type="text" id="card_number" name="pokemon_card_number" autocomplete="new-password" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore placeholder="e.g. 4/102" value="{{ card_number or '' }}">
         </div>
       </div>
       <div>

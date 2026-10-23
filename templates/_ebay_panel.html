@@ -38,11 +38,23 @@
 
 <h3 class="section-title">Recent sales</h3>
 <p class="none">{{ sold_message|default('') }}</p>
-<p class="none">Open eBay's own sold listings, newest first, filtered to each condition:</p>
-<div class="sold-links">
-  {% for condition in ebay_condition_order %}
-    <a href="{{ sold_links[condition] }}" target="_blank" rel="noopener">
-      <span>{{ condition }}</span><span class="go">Sold items &#8599;</span>
-    </a>
-  {% endfor %}
-</div>
+<p class="none">Open eBay's own sold listings. <strong>Lowest price + shipping</strong> is the main view; <strong>Ended recently</strong> shows the newest sales first.</p>
+<table class="sold-table">
+  <thead>
+    <tr><th>Condition</th><th>Lowest price + shipping</th><th>Ended recently</th></tr>
+  </thead>
+  <tbody>
+    <tr class="sold-any">
+      <td>Any condition</td>
+      <td><a class="sold-btn primary" href="{{ sold_links.all.price }}" target="_blank" rel="noopener">Sold items &#8599;</a></td>
+      <td><a class="sold-btn" href="{{ sold_links.all.recent }}" target="_blank" rel="noopener">Sold items &#8599;</a></td>
+    </tr>
+    {% for condition in ebay_condition_order %}
+      <tr>
+        <td>{{ condition }}</td>
+        <td><a class="sold-btn primary" href="{{ sold_links.conditions[condition].price }}" target="_blank" rel="noopener">Sold items &#8599;</a></td>
+        <td><a class="sold-btn" href="{{ sold_links.conditions[condition].recent }}" target="_blank" rel="noopener">Sold items &#8599;</a></td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
