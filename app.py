@@ -187,13 +187,15 @@ def _candidate_from_args(product_id):
     }
 
 
-def _ebay_shell(product, language):
+def _ebay_shell(product, language, printing=None):
     """Template variables for the eBay tab's initial 'loading' state."""
-    query = ebay.build_query(product["name"], product["number"], language, product.get("set_name"))
+    query = ebay.build_query(product["name"], product["number"], language,
+                             product.get("set_name"), printing)
     return dict(
         ebay_panel_url=url_for("card_ebay_panel", product_id=product["product_id"],
                                name=product["name"], set_name=product.get("set_name") or "",
-                               card_number=product["number"], language=language),
+                               card_number=product["number"], language=language,
+                               printing=printing or ""),
         ebay_query_text=query,
         ebay_search_url=ebay.search_url(query, language),
         ebay_condition_order=ebay.CONDITION_ORDER,
@@ -208,7 +210,8 @@ def card_ebay_panel(product_id):
     background as soon as it loads."""
     candidate = _candidate_from_args(product_id)
     language = tcg_scraper.resolve_language(request.args.get("language", ""))
-    shell = _ebay_shell(candidate, language)
+    printing = request.args.get("printing", "").strip() or None
+    shell = _ebay_shell(candidate, language, printing)
     query = shell["ebay_query_text"]
 
     listings = {label: None for label in ebay.CONDITION_ORDER}
@@ -234,7 +237,7 @@ def card_ebay_panel(product_id):
 
 @app.route("/", methods=["GET"])
 def index():
-    return render_template("index.html", edition="", holofoil=True, language="en",
+    return render_template("index.html", edition="standard", holofoil=True, language="en",
                            edition_choices=tcg_scraper.EDITION_CHOICES,
                            language_choices=tcg_scraper.LANGUAGE_CHOICES)
 
@@ -244,7 +247,7 @@ def search():
     name = request.args.get("pokemon_card_name", "").strip()
     set_name = request.args.get("set_name", "").strip() or None
     card_number = request.args.get("pokemon_card_number", "").strip() or None
-    edition = request.args.get("edition", "").strip()
+    edition = request.args.get("edition", "").strip() or "standard"
     # Hidden "0" + checkbox "1" share the name; unchecked sends only the "0".
     # Absent entirely (e.g. hand-typed URL) defaults to checked.
     holo_values = request.args.getlist("holofoil")
@@ -293,6 +296,7 @@ def search():
     return render_template(
         "results.html",
         product=result["product"],
+        product_url=tcg_scraper.product_url(result["product"]["product_id"], printing),
         listings=listings,
         sales=sales,
         sales_stats=sales_stats,
@@ -302,7 +306,7 @@ def search():
         search_note=result.get("note"),
         condition_order=tcg_scraper.CONDITION_ORDER,
         language=language,
-        **_ebay_shell(result["product"], language),
+        **_ebay_shell(result["product"], language, printing),
     )
 
 
@@ -318,7 +322,7 @@ def card_detail(product_id):
     try:
         result = _get_cached_details(candidate, printing, language)
     except tcg_scraper.TCGScraperError as e:
-        return render_template("index.html", error=str(e), edition="", holofoil=True,
+        return render_template("index.html", error=str(e), edition="standard", holofoil=True,
                                language=language,
                                edition_choices=tcg_scraper.EDITION_CHOICES,
                                language_choices=tcg_scraper.LANGUAGE_CHOICES)
@@ -335,6 +339,7 @@ def card_detail(product_id):
     return render_template(
         "results.html",
         product=result["product"],
+        product_url=tcg_scraper.product_url(result["product"]["product_id"], printing),
         listings=listings,
         sales=sales,
         sales_stats=sales_stats,
@@ -344,7 +349,7 @@ def card_detail(product_id):
         condition_order=tcg_scraper.CONDITION_ORDER,
         language=language,
         initial_tab=source,
-        **_ebay_shell(result["product"], language),
+        **_ebay_shell(result["product"], language, printing),
     )
 
 

@@ -38,7 +38,6 @@ SEARCH_URL = "https://mp-search-api.tcgplayer.com/v1/search/request"
 LISTINGS_URL = "https://mp-search-api.tcgplayer.com/v1/product/{product_id}/listings"
 LATEST_SALES_URL = "https://mpapi.tcgplayer.com/v2/product/{product_id}/latestsales"
 PRODUCT_PAGE_URL = "https://www.tcgplayer.com/product/{product_id}"
-
 def condition_url(product_id, condition, printing_filter=None):
     """Product page pre-filtered to one condition and, if given, the printing(s):
     ...?Printing=Unlimited+Holofoil&Condition=Lightly+Played"""

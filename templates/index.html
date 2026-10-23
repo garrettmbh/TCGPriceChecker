@@ -68,7 +68,7 @@
       function sync() {
         const picked = document.querySelector('input[name="edition"]:checked');
         const value = picked ? picked.value : "";
-        holo.disabled = (value === "reverse" || value === "");
+        holo.disabled = (value === "reverse");
       }
       radios.forEach(function (r) { r.addEventListener("change", sync); });
       sync();
