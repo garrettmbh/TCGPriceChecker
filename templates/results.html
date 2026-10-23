@@ -5,7 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ product.name }} — Card Price Lookup</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-  <style>[hidden] { display: none !important; } .none.loading { opacity: .7; }</style>
+  <style>[hidden] { display: none !important; } .none.loading { opacity: .7; }
+    .sold-table td, .sold-table th { vertical-align: middle; }
+    .sold-btn { display: inline-block; padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(128,128,128,.45); text-decoration: none; white-space: nowrap; }
+    .sold-btn.primary { font-weight: 600; border-color: #2b6cb0; background: rgba(43,108,176,.18); }
+    .sold-any td { background: rgba(128,128,128,.14); font-weight: 600; border-bottom: 2px solid rgba(128,128,128,.5); }
+  </style>
 </head>
 <body>
   <div class="wrap">

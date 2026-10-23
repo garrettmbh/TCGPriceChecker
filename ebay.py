@@ -286,28 +286,48 @@ DEFAULT_CONDITION_VALUES = {
 }
 
 
-def sold_search_url(query, condition, values=None, language=tcg_scraper.DEFAULT_LANGUAGE):
+SOLD_SORT_PRICE = "15"   # eBay _sop: price + shipping, lowest first
+SOLD_SORT_RECENT = "13"  # eBay _sop: ended recently
+
+
+def sold_search_url(query, condition=None, values=None, language=tcg_scraper.DEFAULT_LANGUAGE,
+                    sort=SOLD_SORT_RECENT):
     """
-    A link to eBay's own sold-listings page for one card condition: Sold items
-    + Completed items, ended recently first, with the Card Condition filter set.
+    A link to eBay's own sold-listings page: Sold items + Completed items,
+    ordered by `sort` (SOLD_SORT_PRICE or SOLD_SORT_RECENT). With a condition
+    row label, the Card Condition filter is set; with condition=None there is
+    no condition filter at all.
     eBay's website writes aspect filters double-encoded (a space is %2520), and
     separates several chosen values with an encoded pipe (%7C).
     """
     double = lambda text: quote(quote(text, safe=""), safe="")
-    chosen = values or DEFAULT_CONDITION_VALUES[condition]
     base = urlencode({"_nkw": query, "_sacat": CCG_CATEGORY_ID,
-                      "LH_Sold": "1", "LH_Complete": "1", "_sop": "13"})
-    return (f"{EBAY_SITE}/sch/i.html?{base}"
-            f"&Card%2520Condition={'%7C'.join(double(v) for v in chosen)}"
-            f"&Language={double(_language_name(language))}")
+                      "LH_Sold": "1", "LH_Complete": "1", "_sop": sort})
+    url = f"{EBAY_SITE}/sch/i.html?{base}"
+    if condition is not None:
+        chosen = values or DEFAULT_CONDITION_VALUES[condition]
+        url += f"&Card%2520Condition={'%7C'.join(double(v) for v in chosen)}"
+    return url + f"&Language={double(_language_name(language))}"
 
 
 def sold_search_urls(query, condition_values=None, language=tcg_scraper.DEFAULT_LANGUAGE):
-    """{row label: sold-listings URL}. condition_values = eBay's own Card
-    Condition wording per row, when a lookup has just seen it."""
+    """
+    {"all": {"price": url, "recent": url},
+     "conditions": {row label: {"price": url, "recent": url}}}
+    "price" = lowest price + shipping first (the main links); "recent" = ended
+    recently first. "all" has no condition filter. condition_values = eBay's own
+    Card Condition wording per row, when a lookup has just seen it.
+    """
     condition_values = condition_values or {}
-    return {label: sold_search_url(query, label, condition_values.get(label), language)
-            for label in CONDITION_ORDER}
+
+    def pair(label=None):
+        vals = condition_values.get(label) if label else None
+        return {
+            "price": sold_search_url(query, label, vals, language, SOLD_SORT_PRICE),
+            "recent": sold_search_url(query, label, vals, language, SOLD_SORT_RECENT),
+        }
+
+    return {"all": pair(), "conditions": {label: pair(label) for label in CONDITION_ORDER}}
 
 
 # Fallback only: guess a condition from the listing title. When a title names
