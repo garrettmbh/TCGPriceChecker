@@ -20,7 +20,7 @@
       <div class="meta">
         <h2>{{ product.name }}{% if product.number %} — #{{ product.number }}{% endif %}</h2>
         <div class="set">{{ product.set_name }}</div>
-        <a href="{{ product.url }}" target="_blank" rel="noopener">View on TCGPlayer &rarr;</a>
+        <a href="{{ product_url }}" target="_blank" rel="noopener">View on TCGPlayer &rarr;</a>
       </div>
     </div>
 
@@ -44,7 +44,7 @@
           <input type="hidden" name="printings" value="{{ printing_options|join('|') }}">
           <label for="printing">Printing</label>
           <select id="printing" name="printing" onchange="this.form.submit()">
-            <option value="">All printings</option>
+            {% if not printing_filter %}<option value="" selected disabled>Choose a printing</option>{% endif %}
             {% for p in printing_options %}
               <option value="{{ p }}" {% if p == printing_filter %}selected{% endif %}>{{ p }}</option>
             {% endfor %}
