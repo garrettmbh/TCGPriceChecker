@@ -10,7 +10,7 @@
   <div class="wrap">
     <div class="topbar">
       <a class="back-link top" href="/">&larr; New search</a>
-      {% if logged_in %}<a class="logout-link" href="{{ url_for('logout') }}">Log out</a>{% endif %}
+      <a class="logout-link" href="{{ url_for('account') }}">Account</a>
     </div>
     <h1>Multiple matches</h1>
     <div class="subtitle">Pick the exact card you meant.</div>
@@ -33,7 +33,7 @@
            data-release="{{ c.set_release_ord if c.set_release_ord is not none else '' }}"
            data-set="{{ c.set_id if c.set_id is not none else '' }}"
            data-number="{{ c.number }}"
-           href="{{ url_for('card_detail', product_id=c.product_id, name=c.name, set_name=c.set_name, card_number=c.number, printing=printing, language=language) }}">
+           href="{{ url_for('card_detail', product_id=c.product_id, name=c.name, set_name=c.set_name, card_number=c.number, printing=printing, language=language, rarity=c.rarity, market_price=c.market_price, set_id=c.set_id) }}">
           <img src="{{ c.image_url }}" alt="{{ c.name }}" onerror="this.style.visibility='hidden'">
           <div class="info">
             <div class="name">{{ c.name }}{% if c.number %} — #{{ c.number }}{% endif %}</div>

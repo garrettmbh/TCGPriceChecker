@@ -20,9 +20,12 @@ import secrets
 import copy
 from datetime import timedelta
 
-from flask import Flask, render_template, request, redirect, url_for, session
+from datetime import datetime, timezone
+
+from flask import Flask, jsonify, render_template, request, redirect, url_for, session
 import ebay
 import pricing
+import saved
 import tcg_scraper
 
 app = Flask(__name__)
@@ -176,12 +179,31 @@ def _with_market_totals(candidates):
     return out
 
 
+def _float_or_none(value):
+    try:
+        n = float(value)
+        return n if n > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(value):
+    try:
+        return int(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _candidate_from_args(product_id):
     return {
         "product_id": product_id,
         "name": request.args.get("name", ""),
         "set_name": request.args.get("set_name", ""),
         "number": request.args.get("card_number", ""),
+        # Carried along only so the Save button / saved list have them.
+        "rarity": request.args.get("rarity", ""),
+        "market_price": _float_or_none(request.args.get("market_price")),
+        "set_id": _int_or_none(request.args.get("set_id")),
         "image_url": f"https://tcgplayer-cdn.tcgplayer.com/product/{product_id}_200w.jpg",
         "url": f"https://www.tcgplayer.com/product/{product_id}",
     }
@@ -202,6 +224,75 @@ def _ebay_shell(product, language, printing=None):
         sold_message=ebay.SOLD_UNAVAILABLE_MESSAGE,
         sold_links=ebay.sold_search_urls(query, None, language),
     )
+
+
+# --- Saved cards -------------------------------------------------------------
+
+def _current_user():
+    """Saved cards belong to the logged-in account. With login turned off
+    (local runs) everything goes in one shared list."""
+    return _APP_USERNAME if _auth_enabled() else "local"
+
+
+def _save_vars(product):
+    return dict(is_saved=saved.is_saved(_current_user(), product["product_id"]))
+
+
+@app.route("/saved/toggle", methods=["POST"])
+def saved_toggle():
+    """Adds the card to the account's saved list, or removes it if it's already
+    there. Returns {"saved": true|false} for the button to update itself."""
+    product_id = _int_or_none(request.form.get("product_id"))
+    if not product_id:
+        return jsonify(error="Missing product_id"), 400
+    user = _current_user()
+    if saved.is_saved(user, product_id):
+        saved.remove(user, product_id)
+        return jsonify(saved=False)
+    saved.add(user, {
+        "product_id": product_id,
+        "name": request.form.get("name", ""),
+        "set_name": request.form.get("set_name", ""),
+        "number": request.form.get("card_number", ""),
+        "rarity": request.form.get("rarity", ""),
+        "set_id": _int_or_none(request.form.get("set_id")),
+        "market_price": _float_or_none(request.form.get("market_price")),
+        "printing": request.form.get("printing", "").strip(),
+        "language": tcg_scraper.resolve_language(request.form.get("language", "")),
+    })
+    return jsonify(saved=True)
+
+
+@app.route("/account", methods=["GET"])
+def account():
+    rows = saved.list_cards(_current_user())
+    candidates = []
+    for r in rows:
+        try:
+            saved_dt = datetime.fromisoformat(r["saved_at"])
+        except ValueError:
+            saved_dt = datetime.now(timezone.utc)
+        candidates.append({
+            "product_id": r["product_id"],
+            "name": r["name"],
+            "set_name": r["set_name"],
+            "number": r["number"],
+            "rarity": r["rarity"],
+            "set_id": r["set_id"],
+            "market_price": r["market_price"],
+            "printing": r["printing"],
+            "language": r["language"],
+            "saved_at": r["saved_at"],
+            "saved_ts": int(saved_dt.timestamp()),
+            "saved_date": saved_dt.date().isoformat(),
+            "image_url": f"https://tcgplayer-cdn.tcgplayer.com/product/{r['product_id']}_200w.jpg",
+        })
+    # Release dates are looked up per language (English and Japanese sets are
+    # separate TCGPlayer categories).
+    for lang in {c["language"] for c in candidates}:
+        annotate = [c for c in candidates if c["language"] == lang]
+        tcg_scraper.annotate_release_dates(annotate, lang)
+    return render_template("account.html", candidates=_with_market_totals(candidates))
 
 
 @app.route("/card/<int:product_id>/ebay", methods=["GET"])
@@ -306,6 +397,7 @@ def search():
         search_note=result.get("note"),
         condition_order=tcg_scraper.CONDITION_ORDER,
         language=language,
+        **_save_vars(result["product"]),
         **_ebay_shell(result["product"], language, printing),
     )
 
@@ -349,6 +441,7 @@ def card_detail(product_id):
         condition_order=tcg_scraper.CONDITION_ORDER,
         language=language,
         initial_tab=source,
+        **_save_vars(result["product"]),
         **_ebay_shell(result["product"], language, printing),
     )
 

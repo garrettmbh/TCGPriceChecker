@@ -9,6 +9,12 @@
     .sold-table td, .sold-table th { vertical-align: middle; }
     .sold-btn { display: inline-block; padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(128,128,128,.45); text-decoration: none; white-space: nowrap; }
     .sold-btn.primary { font-weight: 600; border-color: #2b6cb0; background: rgba(43,108,176,.18); }
+    .title-row { display: flex; align-items: center; gap: 10px; }
+    .title-row h2 { margin: 0; }
+    .save-btn { flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%;
+      background: #2f9e44; color: #fff; font-size: 22px; line-height: 32px; text-align: center; cursor: pointer; }
+    .save-btn.saved { background: #e03131; }
+    .save-btn:disabled { opacity: .6; cursor: default; }
     .sold-any td { background: rgba(128,128,128,.14); font-weight: 600; border-bottom: 2px solid rgba(128,128,128,.5); }
   </style>
 </head>
@@ -16,14 +22,29 @@
   <div class="wrap">
     <div class="topbar">
       <a class="back-link top" href="/">&larr; New search</a>
-      {% if logged_in %}<a class="logout-link" href="{{ url_for('logout') }}">Log out</a>{% endif %}
+      <a class="logout-link" href="{{ url_for('account') }}">Account</a>
     </div>
     {% if search_note %}<div class="notice">{{ search_note }}</div>{% endif %}
 
     <div class="card-header">
       <img src="{{ product.image_url }}" alt="{{ product.name }}" onerror="this.style.visibility='hidden'">
       <div class="meta">
-        <h2>{{ product.name }}{% if product.number %} — #{{ product.number }}{% endif %}</h2>
+        <div class="title-row">
+          <h2>{{ product.name }}{% if product.number %} — #{{ product.number }}{% endif %}</h2>
+          <button type="button" id="save-btn" class="save-btn{% if is_saved %} saved{% endif %}"
+                  aria-label="{{ 'Remove from saved cards' if is_saved else 'Save card' }}"
+                  title="{{ 'Remove from saved cards' if is_saved else 'Save card' }}"
+                  data-url="{{ url_for('saved_toggle') }}"
+                  data-product-id="{{ product.product_id }}"
+                  data-name="{{ product.name }}"
+                  data-set-name="{{ product.set_name }}"
+                  data-card-number="{{ product.number }}"
+                  data-rarity="{{ product.rarity or '' }}"
+                  data-market-price="{{ product.market_price if product.market_price else '' }}"
+                  data-set-id="{{ product.set_id if product.set_id is not none else '' }}"
+                  data-printing="{{ printing_filter or '' }}"
+                  data-language="{{ language|default('en') }}">{{ '−' if is_saved else '+' }}</button>
+        </div>
         <div class="set">{{ product.set_name }}</div>
         <a href="{{ product_url }}" target="_blank" rel="noopener">View on TCGPlayer &rarr;</a>
       </div>
@@ -45,6 +66,9 @@
           <input type="hidden" name="set_name" value="{{ product.set_name }}">
           <input type="hidden" name="card_number" value="{{ product.number }}">
           <input type="hidden" name="language" value="{{ language|default('en') }}">
+          <input type="hidden" name="rarity" value="{{ product.rarity or '' }}">
+          <input type="hidden" name="market_price" value="{{ product.market_price if product.market_price else '' }}">
+          <input type="hidden" name="set_id" value="{{ product.set_id if product.set_id is not none else '' }}">
           {# every printing this card has, so the dropdown keeps all of them after you pick one #}
           <input type="hidden" name="printings" value="{{ printing_options|join('|') }}">
           <label for="printing">Printing</label>
@@ -181,6 +205,32 @@
       }
       tabs.forEach(function (a) {
         a.addEventListener("click", function (e) { e.preventDefault(); show(a.dataset.tab); });
+      });
+
+      // Save / unsave this card on the account's saved list.
+      var saveBtn = document.getElementById("save-btn");
+      function paintSave(on) {
+        saveBtn.classList.toggle("saved", on);
+        saveBtn.textContent = on ? "\u2212" : "+";
+        var label = on ? "Remove from saved cards" : "Save card";
+        saveBtn.title = label; saveBtn.setAttribute("aria-label", label);
+      }
+      saveBtn.addEventListener("click", function () {
+        var d = saveBtn.dataset, body = new URLSearchParams({
+          product_id: d.productId, name: d.name, set_name: d.setName, card_number: d.cardNumber,
+          rarity: d.rarity, market_price: d.marketPrice, set_id: d.setId,
+          printing: d.printing, language: d.language
+        });
+        saveBtn.disabled = true;
+        fetch(d.url, { method: "POST", body: body, credentials: "same-origin" })
+          .then(function (r) {
+            if (r.redirected) { location.reload(); return null; }  // session expired -> login page
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.json();
+          })
+          .then(function (j) { if (j) paintSave(j.saved); })
+          .catch(function () { alert("Couldn't update your saved cards. Please try again."); })
+          .then(function () { saveBtn.disabled = false; });
       });
 
       // Start the eBay lookup as soon as the page loads, in the background.
