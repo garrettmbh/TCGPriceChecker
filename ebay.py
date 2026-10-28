@@ -28,7 +28,9 @@ Configuration (environment variables):
     EBAY_CLIENT_ID       your Production App ID (Client ID)
     EBAY_CLIENT_SECRET   your Production Cert ID (Client Secret)
     EBAY_MARKETPLACE_ID  optional, default EBAY_US
-    EBAY_DELIVERY_ZIP    optional US ZIP; lets eBay quote calculated shipping
+    EBAY_DELIVERY_COUNTRY optional, default CA; where eBay quotes shipping to
+    EBAY_DELIVERY_ZIP    optional; eBay ignored a Canadian postal code in testing,
+                         so leave it unset
 """
 
 import base64
@@ -48,6 +50,7 @@ log = logging.getLogger(__name__)
 
 TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+ITEM_URL = "https://api.ebay.com/buy/browse/v1/item/"
 OAUTH_SCOPE = "https://api.ebay.com/oauth/api_scope"
 EBAY_SITE = "https://www.ebay.ca"  # every link we build or rewrite points here
 CCG_CATEGORY_ID = "183454"  # Toys & Hobbies > Collectible Card Games > CCG Individual Cards
@@ -62,6 +65,7 @@ CONDITION_ORDER = [
 ]
 
 CACHE_TTL_SECONDS = 10 * 60   # a lookup costs several API calls; be gentle on the daily quota
+MAX_SHIPPING_LOOKUPS = 4     # per condition: getItem calls to price 'calculated' shipping
 PER_CONDITION_LIMIT = 50      # cheapest N per condition (some get dropped by the language filter)
 FALLBACK_LIMIT = 200          # for the single-query fallback
 
@@ -75,6 +79,38 @@ GRADED_CONDITION_ID = "2750"  # eBay's "Graded" condition for trading cards (ung
 
 # Fan-made / non-official cards. Matched against the listing title only.
 EXCLUDED_TITLE_PATTERN = re.compile(r"\b(fan[\s-]?made|proxy|proxies|custom\w*)\b", re.I)
+
+JAPAN_TAX_RATE = 1.0     # seller in Japan: no tax
+DEFAULT_TAX_RATE = 1.13  # seller anywhere else: 13%
+
+# Printing -> title checks. eBay's keyword search can match "1st edition" in
+# places other than the title (item specifics, description), so the title is
+# checked too.
+FIRST_EDITION_TITLE = re.compile(r"\b(1st|first)[\s-]*ed", re.I)
+REVERSE_TITLE = re.compile(r"\b(reverse|rev)\b", re.I)
+
+
+def tax_rate_for_listing(listing):
+    """JP seller -> 0% tax; any other (or unknown) seller location -> 13%."""
+    if (listing.get("seller_country") or "").upper() == "JP":
+        return JAPAN_TAX_RATE
+    return DEFAULT_TAX_RATE
+
+
+def _printing_matches_title(title, printing):
+    """
+    1st Edition printings need '1st ed...' in the title; Reverse needs
+    'reverse'. Any other printing drops titles that say 1st edition.
+    No printing selected = no check.
+    """
+    names = [n.lower() for n in tcg_scraper._printing_names(printing)]
+    if not names:
+        return True
+    if any(n.startswith("1st edition") for n in names):
+        return bool(FIRST_EDITION_TITLE.search(title))
+    if any(n == "reverse holofoil" for n in names):
+        return bool(REVERSE_TITLE.search(title)) and not FIRST_EDITION_TITLE.search(title)
+    return not FIRST_EDITION_TITLE.search(title)
 
 
 class EbayError(Exception):
@@ -101,6 +137,10 @@ def _marketplace():
 
 def _delivery_zip():
     return os.environ.get("EBAY_DELIVERY_ZIP", "").strip()
+
+
+def _delivery_country():
+    return os.environ.get("EBAY_DELIVERY_COUNTRY", "").strip() or "CA"
 
 
 def is_configured():
@@ -146,8 +186,10 @@ def _api_get(url, params):
             "X-EBAY-C-MARKETPLACE-ID": _marketplace(),
             "Accept": "application/json",
         }
+        ctx = f"contextualLocation=country={_delivery_country()}"
         if _delivery_zip():
-            headers["X-EBAY-C-ENDUSERCTX"] = f"contextualLocation=country=US,zip={_delivery_zip()}"
+            ctx += f",zip={_delivery_zip()}"
+        headers["X-EBAY-C-ENDUSERCTX"] = ctx
         try:
             resp = requests.get(url, params=params, headers=headers, timeout=20)
         except requests.RequestException as e:
@@ -192,9 +234,20 @@ def _normalize_number(number, language=tcg_scraper.DEFAULT_LANGUAGE):
     return _unpadded_number(number)
 
 
+_DASHES = "-\u2013\u2014"
+_DASH_AT_WORD_EDGE = re.compile(
+    rf"(?:(?<=\s)|^)[{_DASHES}]+|[{_DASHES}]+(?=\s|$)"
+)
+
+
 def _clean_text(text):
-    """Strip characters eBay treats as search operators."""
-    base = re.sub(r"[()\[\]{},#:;\"\u2014\u2013-]+", " ", text or "")
+    """
+    Strip characters eBay treats as search operators. Dashes are only removed
+    when they touch whitespace (or the start/end of the text), so 'Ho-Oh' keeps
+    its hyphen while ' \u2014 ' and a leading '-word' (an eBay exclusion) go.
+    """
+    base = re.sub(r"[()\[\]{},#:;\"]+", " ", text or "")
+    base = _DASH_AT_WORD_EDGE.sub(" ", base)
     return " ".join(base.split())
 
 
@@ -215,19 +268,14 @@ def build_query(name, number=None, language=tcg_scraper.DEFAULT_LANGUAGE, set_na
     card name + set name instead. Brackets and dashes are removed because eBay
     treats parentheses and commas in a query as search operators.
 
-    Japanese cards: sellers write the number both ways ('069/084' and
-    '69/84'), so when the two forms differ the query matches either one using
-    eBay's OR syntax, e.g. 'Pikachu (069/084,69/84)'. English cards use the
-    unpadded form only.
+    Japanese cards use the number exactly as TCGPlayer gives it (e.g.
+    'Rocket's Suicune ex 069/084'), with no OR alternative. English cards use
+    the unpadded form.
     """
     base = _clean_text(name)
     num = _normalize_number(number, language)
     if num:
         if num.lower() not in base.lower():
-            if tcg_scraper.resolve_language(language) == "jp":
-                alt = _unpadded_number(number)
-                if alt and alt.lower() != num.lower() and alt.lower() not in base.lower():
-                    num = f"({num},{alt})"
             base = f"{base} {num}".strip()
     else:
         set_text = _clean_text(set_name)
@@ -362,18 +410,34 @@ def _to_usd(value, currency):
     return None
 
 
+def _money_usd(obj):
+    """
+    A {"value", "currency", "convertedFromValue", "convertedFromCurrency"} amount
+    as USD. When eBay converted the amount from USD (e.g. to CAD for a Canadian
+    buyer), the original USD figure is used, so nothing is converted twice.
+    """
+    if not obj:
+        return None
+    if (obj.get("currency") or "").upper() != "USD" \
+            and (obj.get("convertedFromCurrency") or "").upper() == "USD":
+        return _to_usd(obj.get("convertedFromValue"), "USD")
+    return _to_usd(obj.get("value"), obj.get("currency"))
+
+
 def _to_ebay_ca(url):
     """The Browse API returns ebay.com item links; point them at ebay.ca."""
     return re.sub(r"^https?://(www\.)?ebay\.com", EBAY_SITE, url, flags=re.I) if url else url
 
 
-def _item_to_listing(item, language=tcg_scraper.DEFAULT_LANGUAGE):
+def _item_to_listing(item, language=tcg_scraper.DEFAULT_LANGUAGE, printing=None):
     """One item summary -> the same shape the TCGPlayer listings use, or None to skip it."""
     if str(item.get("conditionId")) == GRADED_CONDITION_ID:
         return None  # graded slabs aren't comparable to raw-card prices
     title = item.get("title") or ""
     if EXCLUDED_TITLE_PATTERN.search(title):
         return None  # fan-made / proxy / custom cards aren't official
+    if not _printing_matches_title(title, printing):
+        return None  # wrong printing (e.g. not a 1st Edition card)
     # Same language filter as TCGPlayer: drop anything that names another language
     # (for a Japanese search, Japanese is the wanted language and isn't dropped).
     pattern = tcg_scraper.foreign_language_pattern(language)
@@ -385,8 +449,7 @@ def _item_to_listing(item, language=tcg_scraper.DEFAULT_LANGUAGE):
         return None
     shipping = None
     for option in item.get("shippingOptions") or []:
-        cost = option.get("shippingCost") or {}
-        amount = _to_usd(cost.get("value"), cost.get("currency"))
+        amount = _money_usd(option.get("shippingCost"))
         if amount is not None and (shipping is None or amount < shipping):
             shipping = amount
     shipping_known = shipping is not None
@@ -399,13 +462,71 @@ def _item_to_listing(item, language=tcg_scraper.DEFAULT_LANGUAGE):
         "seller": (item.get("seller") or {}).get("username", "unknown"),
         "title": title,
         "url": _to_ebay_ca(item.get("itemWebUrl")),
+        "seller_country": ((item.get("itemLocation") or {}).get("country") or "").upper(),
+        "item_id": item.get("itemId"),
     }
 
 
-def _keep_cheapest(best, bucket, listing):
-    current = best.get(bucket)
-    if current is None or listing["lowest_total"] < current["lowest_total"]:
-        best[bucket] = listing
+_shipping_cache = {}  # item id -> {"ts": float, "usd": float or None}
+
+
+def _item_shipping_usd(item_id):
+    """
+    Shipping to the delivery country (USD) for one item, from the single-item
+    endpoint. Search results leave "calculated" shipping blank, but this
+    endpoint prices it. None if eBay gives no cost. Cached like the searches.
+    """
+    if not item_id:
+        return None
+    hit = _shipping_cache.get(item_id)
+    if hit and (time.time() - hit["ts"]) < CACHE_TTL_SECONDS:
+        return hit["usd"]
+    try:
+        data = _api_get(ITEM_URL + item_id, {})
+    except EbayError as e:
+        log.warning("eBay item lookup for %s failed: %s", item_id, e)
+        return None  # not cached, so a later lookup can retry
+    costs = [c for c in (_money_usd(o.get("shippingCost")) for o in data.get("shippingOptions") or [])
+             if c is not None]
+    usd = min(costs) if costs else None
+    if len(_shipping_cache) > 2000:
+        _shipping_cache.clear()
+    _shipping_cache[item_id] = {"ts": time.time(), "usd": usd}
+    return usd
+
+
+def _pick_cheapest(listings):
+    """
+    The cheapest listing (price + shipping) from one condition's candidates.
+    A listing whose shipping search didn't return is priced with $0 shipping at
+    first, i.e. a lower bound. The cheapest such listing is looked up with
+    getItem (up to MAX_SHIPPING_LOOKUPS), re-ranked with its real shipping, and
+    repeated until the front-runner has known shipping. Listings whose shipping
+    can't be found only win when no listing has a known cost.
+    """
+    pool = sorted(listings, key=lambda l: l["lowest_total"])
+    unpriced, lookups = [], 0
+    while pool and not pool[0]["shipping_known"] and lookups < MAX_SHIPPING_LOOKUPS:
+        top = pool.pop(0)
+        lookups += 1
+        cost = _item_shipping_usd(top.get("item_id"))
+        if cost is None:
+            unpriced.append(top)
+            continue
+        top["shipping"] = round(cost, 2)
+        top["shipping_known"] = True
+        top["lowest_total"] = round(top["price"] + cost, 2)
+        pool.append(top)
+        pool.sort(key=lambda l: l["lowest_total"])
+    known = [l for l in pool if l["shipping_known"]]
+    if known:
+        return known[0]
+    rest = unpriced + pool
+    return min(rest, key=lambda l: l["lowest_total"]) if rest else None
+
+
+def _finalize(pools):
+    return {label: _pick_cheapest(items) for label, items in pools.items()}
 
 
 # --- searching ---------------------------------------------------------------------
@@ -453,18 +574,18 @@ def _search_condition_value(base, entry, language=tcg_scraper.DEFAULT_LANGUAGE):
     return _search(params, PER_CONDITION_LIMIT)
 
 
-def _lookup(query, language=tcg_scraper.DEFAULT_LANGUAGE):
+def _lookup(query, language=tcg_scraper.DEFAULT_LANGUAGE, printing=None):
     base = {
         "q": query,
         "category_ids": CCG_CATEGORY_ID,
-        "filter": "buyingOptions:{FIXED_PRICE|BEST_OFFER}",
+        "filter": f"buyingOptions:{{FIXED_PRICE|BEST_OFFER}},deliveryCountry:{_delivery_country()}",
         # Limit to the chosen language. The refinement links eBay returns for
         # each Card Condition (see _card_condition_values) carry this filter
         # forward, so every per-condition search inherits it.
         "aspect_filter": f"categoryId:{CCG_CATEGORY_ID},{_language_aspect(language)}",
         "sort": "price",
     }
-    best = {label: None for label in CONDITION_ORDER}
+    pools = {label: [] for label in CONDITION_ORDER}
 
     try:
         values = _card_condition_values(base)
@@ -485,25 +606,25 @@ def _lookup(query, language=tcg_scraper.DEFAULT_LANGUAGE):
             succeeded += 1
             bucket = condition_bucket(entry["value"])
             for item in items:
-                listing = _item_to_listing(item, language)
+                listing = _item_to_listing(item, language, printing)
                 if listing:
-                    _keep_cheapest(best, bucket, listing)
+                    pools[bucket].append(listing)
         if succeeded:
-            return {"by_condition": best, "approximate": False, "query": query,
+            return {"by_condition": _finalize(pools), "approximate": False, "query": query,
                     "condition_values": condition_values}
 
     # Fallback: one price-sorted search, conditions guessed from titles.
     for item in _search(base, FALLBACK_LIMIT):
-        listing = _item_to_listing(item, language)
+        listing = _item_to_listing(item, language, printing)
         if listing:
-            _keep_cheapest(best, _classify_title(listing["title"]), listing)
-    return {"by_condition": best, "approximate": True, "query": query, "condition_values": {}}
+            pools[_classify_title(listing["title"])].append(listing)
+    return {"by_condition": _finalize(pools), "approximate": True, "query": query, "condition_values": {}}
 
 
 _cache = {}  # (marketplace, query, language) -> {"ts": float, "data": dict}
 
 
-def get_lowest_listings(query, language=tcg_scraper.DEFAULT_LANGUAGE):
+def get_lowest_listings(query, language=tcg_scraper.DEFAULT_LANGUAGE, printing=None):
     """
     Returns {"by_condition": {label: listing-or-None}, "approximate": bool, "query": str,
              "condition_values": {label: [eBay's Card Condition wording]}}.
@@ -512,10 +633,10 @@ def get_lowest_listings(query, language=tcg_scraper.DEFAULT_LANGUAGE):
     if not is_configured():
         raise EbayNotConfigured("EBAY_CLIENT_ID / EBAY_CLIENT_SECRET are not set.")
     language = tcg_scraper.resolve_language(language)
-    key = (_marketplace(), query, language)
+    key = (_marketplace(), query, language, printing)
     hit = _cache.get(key)
     if hit and (time.time() - hit["ts"]) < CACHE_TTL_SECONDS:
         return copy.deepcopy(hit["data"])
-    data = _lookup(query, language)
+    data = _lookup(query, language, printing)
     _cache[key] = {"ts": time.time(), "data": copy.deepcopy(data)}
     return data

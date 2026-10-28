@@ -122,7 +122,7 @@ def _unwrap_number(value):
 # unrelated note that happens to contain one of these tokens — tune the
 # list below if that turns out to be a problem in practice.
 FOREIGN_LANGUAGE_PATTERN = re.compile(
-    r"\b(japanese|japan|jpn|jap|jp|korean|korea|kor|kr|chinese|china|chn|cn|prc|spanish|spain|italian)\b",
+    r"\b(japanese|japan|jpn|jap|jp|korean|korea|kor|kr|chinese|china|chn|cn|prc|spanish|spain|italian|german|germany|deutsch)\b",
     re.IGNORECASE,
 )
 
@@ -154,7 +154,7 @@ def resolve_language(value):
 # Same idea as FOREIGN_LANGUAGE_PATTERN, but for Japanese searches: Japanese
 # is now the wanted language, so it's left out and everything else is dropped.
 FOREIGN_LANGUAGE_PATTERN_JP = re.compile(
-    r"\b(korean|korea|kor|kr|chinese|china|chn|cn|prc|spanish|spain|italian)\b",
+    r"\b(korean|korea|kor|kr|chinese|china|chn|cn|prc|spanish|spain|italian|german|germany|deutsch)\b",
     re.IGNORECASE,
 )
 
@@ -244,11 +244,18 @@ SEARCH_MAX_PAGES = 8          # name given: up to 72 candidates per query
 SEARCH_MAX_PAGES_BROWSE = 10  # no name (e.g. a whole set): up to 240
 
 
-def _search_once(session, query, language=DEFAULT_LANGUAGE, max_pages=SEARCH_MAX_PAGES):
+def _search_once(session, query, language=DEFAULT_LANGUAGE, max_pages=SEARCH_MAX_PAGES,
+                 printing=None):
     """Run one search query (paged) and return candidate dicts."""
     lang = LANGUAGE_SETTINGS[resolve_language(language)]
     candidates, seen_ids = [], set()
     for page in range(max_pages):
+        term = {"productLineName": [lang["product_line"]], "productTypeName": ["Cards"]}
+        listing_term = {"sellerStatus": "Live", "channelId": 0, "language": [lang["listing_language"]]}
+        if printing:
+            # Confirmed from the website's request for ?Printing=Holofoil: the
+            # filter goes in listingSearch.filters.term.printing, as a list.
+            listing_term["printing"] = _printing_names(printing)
         payload = {
             "algorithm": "sales_exp_fields_experiment",
             "from": page * SEARCH_PAGE_SIZE,
@@ -256,14 +263,14 @@ def _search_once(session, query, language=DEFAULT_LANGUAGE, max_pages=SEARCH_MAX
             "filters": {
                 # Pokemon (or Pokemon Japan) *cards* only (no sealed product,
                 # accessories, etc.)
-                "term": {"productLineName": [lang["product_line"]], "productTypeName": ["Cards"]},
+                "term": term,
                 "range": {},
                 "match": {},
             },
             "listingSearch": {
                 "context": {"cart": {"packages": {}}},
                 "filters": {
-                    "term": {"sellerStatus": "Live", "channelId": 0, "language": [lang["listing_language"]]},
+                    "term": listing_term,
                     "range": {"quantity": {"gte": 1}},
                     "exclude": {"channelExclusion": 0},
                 },
@@ -513,7 +520,8 @@ PRINTING_CHECK_WORKERS = 6
 PRINTING_CHECK_TIMEOUT_SECONDS = 20
 
 
-def get_product_printings(product_id, session=None):
+def get_product_printings(product_id, session=None, candidate=None, language=DEFAULT_LANGUAGE,
+                          printing_filter=None):
     """
     The printings a product currently has live listings for, e.g.
     {"Normal", "Reverse Holofoil"}. Cached. Raises TCGScraperError when it
@@ -550,11 +558,25 @@ def get_product_printings(product_id, session=None):
         # appears beyond the cheapest listings can't be ruled out.
         raise TCGScraperError(f"Can't rule out printings for product {product_id}.")
     found = facet | seen
+    if not found and candidate is not None:
+        # No live listings: ask TCGPlayer's catalog instead.
+        try:
+            found = get_catalog_printings(candidate, language, s)
+        except TCGScraperError as e:
+            names = _printing_names(printing_filter)
+            if not names:
+                raise
+            # The catalog can't tell us either, so trust the printing the user
+            # chose. Not cached: it's an assumption, not something TCGPlayer said.
+            log.info("No listings and no catalog answer for product %s (%s); "
+                     "assuming the selected printing.", product_id, e)
+            return {names[0]}
     _store_printings(product_id, found, allow_empty=True)
     return found
 
 
-def filter_candidates_by_printing(candidates, printing_filter, session=None):
+def filter_candidates_by_printing(candidates, printing_filter, session=None,
+                                  language=DEFAULT_LANGUAGE):
     """
     Keep candidates that have `printing_filter` (an exact printing name).
     Returns (kept, hidden_count, unchecked_count); unchecked ones are kept.
@@ -574,7 +596,10 @@ def filter_candidates_by_printing(candidates, printing_filter, session=None):
 
     if pending:
         pool = ThreadPoolExecutor(max_workers=PRINTING_CHECK_WORKERS)
-        futures = {pool.submit(get_product_printings, pid, session): pid for pid in pending}
+        by_id = {c["product_id"]: c for c in candidates}
+        futures = {pool.submit(get_product_printings, pid, session, by_id[pid], language,
+                                printing_filter): pid
+                   for pid in pending}
         try:
             for fut in as_completed(futures, timeout=PRINTING_CHECK_TIMEOUT_SECONDS):
                 try:
@@ -632,7 +657,8 @@ def find_candidates(name, set_name=None, card_number=None, printing_filter=None,
             continue
         notes = []
         if printing_filter:
-            found, hidden, unchecked = filter_candidates_by_printing(found, printing_filter, session=s)
+            found, hidden, unchecked = filter_candidates_by_printing(
+                found, printing_filter, session=s, language=language)
             if report is not None:
                 report["hidden"] = max(report.get("hidden", 0), hidden)
             if not found:
@@ -672,6 +698,42 @@ PRINTING_VARIANT_IDS = {
     "Unlimited": 122,
     "Unlimited Holofoil": 123,
 }
+
+def get_catalog_printings(candidate, language=DEFAULT_LANGUAGE, session=None):
+    """
+    Printings a product has according to TCGPlayer's catalog, independent of
+    live listings. Asks the search endpoint "does this product appear when
+    filtered to printing X?" for each known printing. Cached.
+    Raises TCGScraperError if the answer can't be trusted.
+    """
+    product_id = int(float(candidate["product_id"]))
+    cached = _cached_printings(product_id)
+    if cached:
+        return set(cached)
+    s = session or _session()
+    number = str(candidate.get("number") or "").split("/")[0].strip()
+    query = build_query(candidate.get("name", ""), None, number)
+
+    def has(printing):
+        try:
+            found = _search_once(s, query, language, max_pages=3, printing=printing)
+        except TCGScraperError:
+            return None
+        return any(c["product_id"] == product_id for c in found)
+
+    names = list(PRINTING_VARIANT_IDS)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = dict(zip(names, pool.map(has, names)))
+
+    if any(v is None for v in results.values()):
+        raise TCGScraperError(f"Couldn't check catalog printings for product {product_id}.")
+    matched = {n for n, v in results.items() if v}
+    if len(matched) == len(names):
+        # Every printing "matched", so the filter is probably being ignored.
+        raise TCGScraperError("Printing filter on search appears to be ignored.")
+    _store_printings(product_id, matched, allow_empty=True)
+    return matched
+
 
 EDITION_CHOICES = [
     ("standard", "Normal"),
@@ -1010,10 +1072,20 @@ def get_card_details(candidate, printing_filter=None, language=DEFAULT_LANGUAGE)
     listings_result = get_current_listings(product_id, printing_filter=printing_filter,
                                            language=language)
     sales = get_latest_sales(product_id, printing_filter=printing_filter)
+    available = listings_result["available_printings"]
+    if not available:
+        # No listings to learn printings from: use TCGPlayer's catalog.
+        try:
+            available = sorted(get_catalog_printings(candidate, language))
+        except Exception as e:
+            log.warning("Catalog printings lookup failed for %s: %s", product_id, e)
+            # No listings and no catalog answer: attach the printing that was selected.
+            names = _printing_names(printing_filter)
+            available = names[:1]
     return {
         "status": "ok",
         "product": candidate,
         "listings": listings_result["by_condition"],
-        "available_printings": listings_result["available_printings"],
+        "available_printings": available,
         "sales": sales,
     }

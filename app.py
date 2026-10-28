@@ -308,7 +308,7 @@ def card_ebay_panel(product_id):
     listings = {label: None for label in ebay.CONDITION_ORDER}
     ebay_error, approximate, condition_values = None, False, {}
     try:
-        data = ebay.get_lowest_listings(query, language)
+        data = ebay.get_lowest_listings(query, language, printing)
         listings, approximate = data["by_condition"], data["approximate"]
         condition_values = data.get("condition_values") or {}
     except ebay.EbayNotConfigured:
@@ -318,7 +318,7 @@ def card_ebay_panel(product_id):
         ebay_error = f"eBay lookup failed: {e}"
 
     rate = pricing.get_usd_to_cad_rate()
-    listings = pricing.enrich_listings(listings, rate)
+    listings = pricing.enrich_listings(listings, rate, tax_rate_for=ebay.tax_rate_for_listing)
 
     shell["sold_links"] = ebay.sold_search_urls(query, condition_values, language)
     return render_template(

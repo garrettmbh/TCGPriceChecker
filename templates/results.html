@@ -11,10 +11,16 @@
     .sold-btn.primary { font-weight: 600; border-color: #2b6cb0; background: rgba(43,108,176,.18); }
     .title-row { display: flex; align-items: center; gap: 10px; }
     .title-row h2 { margin: 0; }
-    .save-btn { flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%;
-      background: #2f9e44; color: #fff; font-size: 22px; line-height: 32px; text-align: center; cursor: pointer; }
+    .save-btn { flex: none; width: 32px; height: 32px; padding: 0 0 4px; border: 0; border-radius: 50%;
+      background: #2f9e44; color: #fff; font-size: 22px; line-height: 1; cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center; }
     .save-btn.saved { background: #e03131; }
     .save-btn:disabled { opacity: .6; cursor: default; }
+    .cond-near-mint { color: #1377BB; }
+    .cond-lightly-played { color: #0EAD72; }
+    .cond-moderately-played { color: #99921B; }
+    .cond-heavily-played { color: #CB5A35; }
+    .cond-damaged { color: #C20009; }
     .sold-any td { background: rgba(128,128,128,.14); font-weight: 600; border-bottom: 2px solid rgba(128,128,128,.5); }
   </style>
 </head>
@@ -104,8 +110,9 @@
         <tbody>
           {% for condition in condition_order %}
             {% set l = listings.get(condition) %}
+            {% set cc = 'cond-' ~ (condition.split(' /')[0]|lower|replace(' ', '-')) %}
             <tr>
-              <td>{{ condition }}{% if l and l.url is defined and l.url %} <a class="ext-link" href="{{ l.url }}" target="_blank" rel="noopener" title="{{ l.title }}">&#8599;</a>{% endif %}</td>
+              <td class="{{ cc }}">{{ condition }}{% if l and l.url is defined and l.url %} <a class="ext-link" href="{{ l.url }}" target="_blank" rel="noopener" title="{{ l.title }}">&#8599;</a>{% endif %}</td>
               {% if l %}
                 <td class="total-value">
                   ${{ "%.2f"|format(l.total) }}
@@ -136,10 +143,11 @@
       {% set ns = namespace(any_sales=false) %}
       {% for condition in condition_order %}
         {% set s = sales.get(condition) %}
+        {% set cc = 'cond-' ~ (condition.split(' /')[0]|lower|replace(' ', '-')) %}
         {% if s %}
           {% set ns.any_sales = true %}
           <div class="sales-block">
-            <h4>{{ condition }}</h4>
+            <h4 class="{{ cc }}">{{ condition }}</h4>
             {% set stats = sales_stats.get(condition) %}
             {% if stats %}
               <div class="sales-stats">
