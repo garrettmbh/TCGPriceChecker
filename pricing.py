@@ -43,17 +43,19 @@ def get_usd_to_cad_rate():
         return _fx_cache["rate"] if _fx_cache["rate"] is not None else FX_FALLBACK_USD_TO_CAD
 
 
-def usd_to_totals(usd_amount, rate=None):
+def usd_to_totals(usd_amount, rate=None, tax_rate=None):
     """
     Convert one USD amount into the three figures the UI shows:
       usd   - as given (listing price + shipping, or a sale's price + shipping)
       cad   - usd * live USD->CAD rate
-      total - cad * NY_SALES_TAX_RATE
+      total - cad * tax_rate (defaults to NY_SALES_TAX_RATE)
     """
     if rate is None:
         rate = get_usd_to_cad_rate()
+    if tax_rate is None:
+        tax_rate = NY_SALES_TAX_RATE
     cad = usd_amount * rate
-    total = cad * NY_SALES_TAX_RATE
+    total = cad * tax_rate
     return {"usd": round(usd_amount, 2), "cad": round(cad, 2), "total": round(total, 2)}
 
 
@@ -129,7 +131,7 @@ def simple_average(totals):
     return sum(totals) / len(totals) if totals else None
 
 
-def enrich_listings(listings, rate=None):
+def enrich_listings(listings, rate=None, tax_rate_for=None):
     """
     Mutates the {condition: {...} or None} dict from tcg_scraper.
     get_current_listings, adding usd/cad/total to each present entry
@@ -141,10 +143,13 @@ def enrich_listings(listings, rate=None):
     for entry in listings.values():
         if not entry:
             continue
-        conv = usd_to_totals(entry["lowest_total"], rate)
+        # tax_rate_for(entry) -> multiplier (e.g. 1.13); None = NY rate.
+        tax = tax_rate_for(entry) if tax_rate_for else None
+        conv = usd_to_totals(entry["lowest_total"], rate, tax)
         entry["usd"] = conv["usd"]
         entry["cad"] = conv["cad"]
         entry["total"] = conv["total"]
+        entry["tax_rate"] = tax if tax is not None else NY_SALES_TAX_RATE
     return listings
 
 
