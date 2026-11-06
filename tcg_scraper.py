@@ -624,6 +624,11 @@ def filter_candidates_by_printing(candidates, printing_filter, session=None,
     return kept, hidden, unchecked
 
 
+def _has_number(candidates, card_number):
+    want = _norm_number(card_number)
+    return any(_norm_number(c["number"]) == want for c in candidates)
+
+
 def find_candidates(name, set_name=None, card_number=None, printing_filter=None, report=None,
                     language=DEFAULT_LANGUAGE):
     """
@@ -632,6 +637,9 @@ def find_candidates(name, set_name=None, card_number=None, printing_filter=None,
       2. name + set
       3. name only
     Results are always narrowed locally by set/number (see _filter_candidates).
+    When a card number is given, a first (strict) pass only accepts queries
+    whose results include that number, moving on to broader queries before a
+    second pass falls back to accepting any results.
     If printing_filter is given (an exact TCGPlayer printing name such as
     "Reverse Holofoil"), cards without that printing are left out. If `report`
     is a dict, it's filled in with {"hidden": n} so a caller can explain an
@@ -650,34 +658,45 @@ def find_candidates(name, set_name=None, card_number=None, printing_filter=None,
 
     pages = SEARCH_MAX_PAGES if name else SEARCH_MAX_PAGES_BROWSE
     label = printing_label(printing_filter)
-    emptied_by_printing = False  # an earlier, more specific search found cards, but none had the printing
-    for i, q in enumerate(queries):
-        found = _filter_candidates(_search_once(s, q, language, max_pages=pages), set_name, card_number, name)
-        if not found:
-            continue
-        notes = []
-        if printing_filter:
-            found, hidden, unchecked = filter_candidates_by_printing(
-                found, printing_filter, session=s, language=language)
-            if report is not None:
-                report["hidden"] = max(report.get("hidden", 0), hidden)
+    cache = {}
+
+    def search(q):
+        if q not in cache:
+            cache[q] = _filter_candidates(
+                _search_once(s, q, language, max_pages=pages), set_name, card_number, name)
+        return cache[q]
+
+    for strict in ((True, False) if card_number else (False,)):
+        emptied_by_printing = False  # earlier query found cards, but none had the printing
+        for i, q in enumerate(queries):
+            found = search(q)
             if not found:
-                emptied_by_printing = True
-                continue  # every card lacked the printing; a broader query may find others
-        else:
-            hidden = unchecked = 0
-        if i and emptied_by_printing:
-            notes.append(f'None of the cards for "{queries[0]}" have a {label} printing, '
-                         f'so these are results for "{q}".')
-        elif i:
-            notes.append(f'No results for "{queries[0]}", so these are results for "{q}".')
-        if printing_filter:
-            if hidden:
-                notes.append(f"Showing only cards with a {label} printing ({hidden} hidden).")
-            if unchecked:
-                notes.append(f"Couldn't check the printings of {unchecked}, so they're included.")
-        annotate_release_dates(found, language)
-        return found, (" ".join(notes) or None)
+                continue
+            if strict and not _has_number(found, card_number):
+                continue  # number not in these results; try a broader query
+            notes = []
+            if printing_filter:
+                found, hidden, unchecked = filter_candidates_by_printing(
+                    found, printing_filter, session=s, language=language)
+                if report is not None:
+                    report["hidden"] = max(report.get("hidden", 0), hidden)
+                if not found:
+                    emptied_by_printing = True
+                    continue
+            else:
+                hidden = unchecked = 0
+            if i and emptied_by_printing:
+                notes.append(f'None of the cards for "{queries[0]}" have a {label} printing, '
+                             f'so these are results for "{q}".')
+            elif i:
+                notes.append(f'No results for "{queries[0]}", so these are results for "{q}".')
+            if printing_filter:
+                if hidden:
+                    notes.append(f"Showing only cards with a {label} printing ({hidden} hidden).")
+                if unchecked:
+                    notes.append(f"Couldn't check the printings of {unchecked}, so they're included.")
+            annotate_release_dates(found, language)
+            return found, (" ".join(notes) or None)
     return [], None
 
 
@@ -970,7 +989,19 @@ def get_current_listings(product_id, printing_filter=None, language=DEFAULT_LANG
     }
 
 
-def get_latest_sales(product_id, printing_filter=None, limit_per_condition=5):
+# Set TCG_DEBUG_SALES=1 to log every sale the app drops, and why.
+DEBUG_SALES = os.environ.get("TCG_DEBUG_SALES", "").strip() not in ("", "0")
+
+
+def _log_dropped_sale(reason, sale):
+    if DEBUG_SALES:
+        log.warning("SALE DROPPED (%s): %s | language=%s | variant=%s | date=%s | title=%r",
+                    reason, sale.get("condition"), sale.get("language"), sale.get("variant"),
+                    (sale.get("orderDate") or "")[:10], sale.get("title"))
+
+
+def get_latest_sales(product_id, printing_filter=None, limit_per_condition=5,
+                     language=DEFAULT_LANGUAGE):
     """
     Fetch recent completed sales for a product, grouped by condition.
 
@@ -985,45 +1016,73 @@ def get_latest_sales(product_id, printing_filter=None, limit_per_condition=5):
     """
     product_id = int(float(product_id))
     url = LATEST_SALES_URL.format(product_id=product_id)
-    payload = {
-        "conditions": [],
-        "variants": [],
-        "languages": [],
-        "listingType": "All",
-    }
+    lang = resolve_language(language)
+    wanted = LANGUAGE_SETTINGS[lang]["listing_language"]
     s = _session()
-    resp = None
     variant_ids = [PRINTING_VARIANT_IDS[n] for n in _printing_names(printing_filter)
                    if n in PRINTING_VARIANT_IDS]
+    # No "languages" filter in the request: it takes numeric ids, and the
+    # endpoint returns sales in every language without it. Each sale record
+    # carries its own "language" name, so the wanted language is picked out below.
+    base = {"conditions": [], "variants": [], "languages": [], "listingType": "All"}
+
+    server_filtered = False
+    resp = None
     if variant_ids:
-        # Server-side filter by variant ids; fall back to unfiltered if rejected.
-        filtered_payload = dict(payload, variants=variant_ids)
-        resp = s.post(url, json=filtered_payload, timeout=15)
-        if resp.status_code != 200:
+        # Server-side filter by variant ids. Fall back to unfiltered (the
+        # printing is then checked per sale below) if it's rejected OR comes
+        # back empty: the ids are the English category's, so on another
+        # product line they can match nothing without raising an error.
+        resp = s.post(url, json=dict(base, variants=variant_ids), timeout=15)
+        if resp.status_code == 200 and resp.json().get("data"):
+            server_filtered = True
+        else:
             resp = None
-    server_filtered = resp is not None
     if resp is None:
-        resp = s.post(url, json=payload, timeout=15)
+        resp = s.post(url, json=base, timeout=15)
     if resp.status_code != 200:
         raise TCGScraperError(
             f"Latest sales request failed ({resp.status_code}) for product {product_id}. "
             f"Response body: {resp.text[:800]}"
         )
 
-    data = resp.json()
-    sales = data.get("data", [])
+    raw_sales = resp.json().get("data", [])
+    sales = []
+    for x in raw_sales:
+        if (x.get("language") or wanted).lower() == wanted.lower():
+            sales.append(x)
+        else:
+            _log_dropped_sale("language", x)
+    if DEBUG_SALES:
+        log.warning("Sales for product %s: %s returned, %s in %s (server variant filter: %s, "
+                    "TCG_AUTH_TICKET set: %s)",
+                    product_id, len(raw_sales), len(sales), wanted, server_filtered,
+                    bool(os.environ.get("TCG_AUTH_TICKET", "").strip()))
+    if not sales:
+        log.info("No %s sales found for product %s (printing=%s)", wanted, product_id, printing_filter)
 
+    foreign_pattern = foreign_language_pattern(lang)
     by_condition = {c: [] for c in CONDITION_ORDER}
     for sale in sales:
         condition = sale.get("condition")
         if condition not in by_condition:
+            _log_dropped_sale("unknown condition", sale)
+            continue
+        # Sellers sometimes list another language's card under this one and say
+        # so in the listing title ("[Korean] ..."). Drop those, the same way
+        # listings are filtered: English drops every other language, Japanese
+        # drops everything except Japanese.
+        if foreign_pattern.search(sale.get("title") or ""):
+            _log_dropped_sale("title names another language", sale)
             continue
         if len(by_condition[condition]) >= limit_per_condition:
+            _log_dropped_sale("over per-condition limit", sale)
             continue
         # Only filter client-side if the server didn't already, and only if
         # the sale record actually reports a printing (unconfirmed field).
         sale_printing = sale.get("printing") or sale.get("variant")
         if not server_filtered and sale_printing and not _matches_printing(sale_printing, printing_filter):
+            _log_dropped_sale("printing", sale)
             continue
         # Using the same unwrap helper here defensively — the sales endpoint
         # hasn't been confirmed against a real response, but the listings
@@ -1071,7 +1130,7 @@ def get_card_details(candidate, printing_filter=None, language=DEFAULT_LANGUAGE)
     product_id = candidate["product_id"]
     listings_result = get_current_listings(product_id, printing_filter=printing_filter,
                                            language=language)
-    sales = get_latest_sales(product_id, printing_filter=printing_filter)
+    sales = get_latest_sales(product_id, printing_filter=printing_filter, language=language)
     available = listings_result["available_printings"]
     if not available:
         # No listings to learn printings from: use TCGPlayer's catalog.
