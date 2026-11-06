@@ -261,6 +261,17 @@ def _edition_term(printing):
     return ""
 
 
+def _number_in_text(number, text):
+    """True if the card number appears in text, however it's zero-padded."""
+    parts = _split_number(number)
+    if not parts:
+        return False
+    pat = r"\s*/\s*".join(
+        "0*" + re.escape(p.lstrip("0") or "0") if p.isdigit() else re.escape(p)
+        for p in parts)
+    return re.search(rf"(?<![\w/]){pat}(?![\w/])", text or "", re.I) is not None
+
+
 def build_query(name, number=None, language=tcg_scraper.DEFAULT_LANGUAGE, set_name=None,
                 printing=None):
     """
@@ -275,7 +286,7 @@ def build_query(name, number=None, language=tcg_scraper.DEFAULT_LANGUAGE, set_na
     base = _clean_text(name)
     num = _normalize_number(number, language)
     if num:
-        if num.lower() not in base.lower():
+        if not _number_in_text(num, base):
             base = f"{base} {num}".strip()
     else:
         set_text = _clean_text(set_name)
