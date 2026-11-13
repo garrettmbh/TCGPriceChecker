@@ -633,30 +633,40 @@ def find_candidates(name, set_name=None, card_number=None, printing_filter=None,
                     language=DEFAULT_LANGUAGE):
     """
     Search from most to least specific until something matches:
-      1. name + set + number   (the full description)
-      2. name + set
-      3. name only
-    Results are always narrowed locally by set/number (see _filter_candidates).
+      1. name + set
+      2. name only
+    (a number-only search is used when there is no name or set)
+    Results are always narrowed locally by set/number (see _filter_candidates);
+    the number matches anything before the "/" ("115" finds "115/112").
     When a card number is given, a first (strict) pass only accepts queries
     whose results include that number, moving on to broader queries before a
     second pass falls back to accepting any results.
     If printing_filter is given (an exact TCGPlayer printing name such as
-    "Reverse Holofoil"), cards without that printing are left out. If `report`
+    "Reverse Holofoil"), cards without that printing are left out. TCGPlayer's
+    search-level printing filter does NOT exclude products, so each candidate
+    is checked individually (see filter_candidates_by_printing). If `report`
     is a dict, it's filled in with {"hidden": n} so a caller can explain an
     empty result. Returns (candidates, note); note explains broader searches
     and hidden cards.
     """
     s = _session()
+    # The card number is NOT part of the search text: TCGPlayer's text search
+    # doesn't match "115" against a card numbered "115/112", so it returned
+    # nothing and forced a fallback. The number is matched locally instead
+    # (see _filter_candidates / _norm_number: everything before the "/").
     queries = []
     for q in (
-        build_query(name, set_name, card_number),
         build_query(name, set_name),
         build_query(name),
     ):
         if q and q not in queries:
             queries.append(q)
+    if not queries and card_number:
+        queries.append(build_query("", None, card_number))  # number only: nothing else to search by
 
-    pages = SEARCH_MAX_PAGES if name else SEARCH_MAX_PAGES_BROWSE
+    # With a number, the wanted card may be far down a long name-only result
+    # list (sorted by price), so read more pages before filtering locally.
+    pages = SEARCH_MAX_PAGES if (name and not card_number) else SEARCH_MAX_PAGES_BROWSE
     label = printing_label(printing_filter)
     cache = {}
 
@@ -675,6 +685,9 @@ def find_candidates(name, set_name=None, card_number=None, printing_filter=None,
             if strict and not _has_number(found, card_number):
                 continue  # number not in these results; try a broader query
             notes = []
+            if card_number and not _has_number(found, card_number):
+                notes.append(f'No card numbered "{card_number}" was found, so these are all the '
+                             f'results for "{q}".')
             if printing_filter:
                 found, hidden, unchecked = filter_candidates_by_printing(
                     found, printing_filter, session=s, language=language)
@@ -1000,7 +1013,7 @@ def _log_dropped_sale(reason, sale):
                     (sale.get("orderDate") or "")[:10], sale.get("title"))
 
 
-def get_latest_sales(product_id, printing_filter=None, limit_per_condition=5,
+def get_latest_sales(product_id, printing_filter=None, limit_per_condition=15,
                      language=DEFAULT_LANGUAGE):
     """
     Fetch recent completed sales for a product, grouped by condition.
@@ -1106,10 +1119,11 @@ def lookup_card(name, set_name=None, card_number=None, printing_filter=None,
     """
     High-level helper: search, and if there's a single clear match, fetch
     full details. Returns either:
-      {"status": "ambiguous", "candidates": [...]}
+      {"status": "ambiguous", "candidates": [...], "note": str|None}
       {"status": "not_found", "hidden_by_printing": int}  # cards found but lacking the printing
-      {"status": "ok", "product": {...}, "listings": {...},
-       "available_printings": [...], "sales": {...}}
+      {"status": "single", "candidate": {...}, "note": str|None}
+    A single match is NOT fetched here; the card page loads listings and sales
+    itself (see get_card_details).
     """
     report = {}
     candidates, note = find_candidates(name, set_name, card_number,
@@ -1119,10 +1133,7 @@ def lookup_card(name, set_name=None, card_number=None, printing_filter=None,
         return {"status": "not_found", "hidden_by_printing": report.get("hidden", 0)}
     if len(candidates) > 1:
         return {"status": "ambiguous", "candidates": candidates, "note": note}
-    result = get_card_details(candidates[0], printing_filter=printing_filter,
-                              language=language)
-    result["note"] = note
-    return result
+    return {"status": "single", "candidate": candidates[0], "note": note}
 
 
 def get_card_details(candidate, printing_filter=None, language=DEFAULT_LANGUAGE):

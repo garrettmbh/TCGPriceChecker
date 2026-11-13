@@ -363,11 +363,10 @@ def search():
     if result["status"] == "not_found":
         hidden = result.get("hidden_by_printing", 0)
         if hidden and printing:
-            label = tcg_scraper.printing_label(printing)
-            error = (f"{hidden} card{'s' if hidden != 1 else ''} matched your search, but "
-                     f"none have a {label} printing. Try another printing, or Any printing.")
+            error = (f"Found {hidden} matching card{'s' if hidden != 1 else ''}, but none have a "
+                     f"{tcg_scraper.printing_label(printing)} printing. Try a different printing.")
         else:
-            error = "No matching card found. Try loosening the search (fewer fields)."
+            error = "No matching card found. Try loosening the search (fewer fields) or a different printing."
         return render_template("index.html", error=error, **form_state)
 
     if result["status"] == "ambiguous":
@@ -379,47 +378,66 @@ def search():
             printing=printing, language=language,
         )
 
-    rate = pricing.get_usd_to_cad_rate()
-    listings = pricing.enrich_listings(result["listings"], rate)
-    sales, sales_stats = pricing.enrich_sales(result["sales"], rate)
-    listings = pricing.add_listing_diffs(listings, sales_stats)
-
-    return render_template(
-        "results.html",
-        product=result["product"],
-        product_url=tcg_scraper.product_url(result["product"]["product_id"], printing),
-        listings=listings,
-        sales=sales,
-        sales_stats=sales_stats,
-        fx_rate=rate,
-        available_printings=result["available_printings"],
-        printing_filter=printing,
-        search_note=result.get("note"),
-        condition_order=tcg_scraper.CONDITION_ORDER,
-        language=language,
-        **_save_vars(result["product"]),
-        **_ebay_shell(result["product"], language, printing),
-    )
+    # Exactly one match: go straight to its card page, which loads listings and
+    # sales in the background (same path as clicking a card in the picker).
+    c = result["candidate"]
+    return redirect(url_for(
+        "card_detail", product_id=c["product_id"], name=c["name"], set_name=c["set_name"],
+        card_number=c["number"], printing=printing, language=language, rarity=c["rarity"],
+        market_price=c["market_price"], set_id=c["set_id"], note=result.get("note")))
 
 
 @app.route("/card/<int:product_id>", methods=["GET"])
 def card_detail(product_id):
-    """Used when the user picks one option off the disambiguation page."""
+    """Card page shell: header, tabs, save button. Nothing is fetched from
+    TCGPlayer here; the page loads the TCGPlayer panel (/card/<id>/tcg) and the
+    eBay panel (/card/<id>/ebay) in the background."""
     printing = request.args.get("printing", "").strip() or None
-    known_printings = _parse_known_printings(request.args.get("printings"))
     language = tcg_scraper.resolve_language(request.args.get("language", ""))
     source = "ebay" if request.args.get("source") == "ebay" else "tcgplayer"
     candidate = _candidate_from_args(product_id)
+    note = request.args.get("note", "").strip()[:300] or None
+
+    tcg_panel_url = url_for(
+        "card_tcg_panel", product_id=product_id, name=candidate["name"],
+        set_name=candidate["set_name"], card_number=candidate["number"],
+        printing=printing or "", printings=request.args.get("printings", ""),
+        language=language, rarity=candidate["rarity"],
+        market_price=candidate["market_price"], set_id=candidate["set_id"])
+
+    return render_template(
+        "results.html",
+        product=candidate,
+        product_url=tcg_scraper.product_url(product_id, printing),
+        printing_filter=printing,
+        search_note=note,
+        condition_order=tcg_scraper.CONDITION_ORDER,
+        language=language,
+        initial_tab=source,
+        tcg_panel_url=tcg_panel_url,
+        **_save_vars(candidate),
+        **_ebay_shell(candidate, language, printing),
+    )
+
+
+@app.route("/card/<int:product_id>/tcg", methods=["GET"])
+def card_tcg_panel(product_id):
+    """HTML fragment for the TCGPlayer tab (printing bar, lowest listings,
+    recent sales). The card page fetches this in the background."""
+    printing = request.args.get("printing", "").strip() or None
+    known_printings = _parse_known_printings(request.args.get("printings"))
+    language = tcg_scraper.resolve_language(request.args.get("language", ""))
+    candidate = _candidate_from_args(product_id)
+    rate = pricing.get_usd_to_cad_rate()
+    common = dict(loading=False, product=candidate, printing_filter=printing, language=language,
+                  condition_order=tcg_scraper.CONDITION_ORDER, fx_rate=rate)
 
     try:
         result = _get_cached_details(candidate, printing, language)
     except tcg_scraper.TCGScraperError as e:
-        return render_template("index.html", error=str(e), edition="standard", holofoil=True,
-                               language=language,
-                               edition_choices=tcg_scraper.EDITION_CHOICES,
-                               language_choices=tcg_scraper.LANGUAGE_CHOICES)
+        return render_template("_tcg_panel.html", tcg_error=str(e), listings={}, sales={},
+                               sales_stats={}, available_printings=[], **common)
 
-    rate = pricing.get_usd_to_cad_rate()
     listings = pricing.enrich_listings(result["listings"], rate)
     sales, sales_stats = pricing.enrich_sales(result["sales"], rate)
     listings = pricing.add_listing_diffs(listings, sales_stats)
@@ -427,23 +445,9 @@ def card_detail(product_id):
     # narrows its own list to the selected one: add back what the page we came
     # from already knew.
     available_printings = sorted(set(result["available_printings"]) | set(known_printings))
-
-    return render_template(
-        "results.html",
-        product=result["product"],
-        product_url=tcg_scraper.product_url(result["product"]["product_id"], printing),
-        listings=listings,
-        sales=sales,
-        sales_stats=sales_stats,
-        fx_rate=rate,
-        available_printings=available_printings,
-        printing_filter=printing,
-        condition_order=tcg_scraper.CONDITION_ORDER,
-        language=language,
-        initial_tab=source,
-        **_save_vars(result["product"]),
-        **_ebay_shell(result["product"], language, printing),
-    )
+    return render_template("_tcg_panel.html", tcg_error=None, listings=listings, sales=sales,
+                           sales_stats=sales_stats, available_printings=available_printings,
+                           **common)
 
 
 if __name__ == "__main__":
