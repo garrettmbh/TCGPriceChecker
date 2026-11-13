@@ -234,20 +234,21 @@ def _current_user():
     return _APP_USERNAME if _auth_enabled() else "local"
 
 
-def _save_vars(product):
-    return dict(is_saved=saved.is_saved(_current_user(), product["product_id"]))
+def _save_vars(product, printing=None):
+    return dict(is_saved=saved.is_saved(_current_user(), product["product_id"], printing or ""))
 
 
 @app.route("/saved/toggle", methods=["POST"])
 def saved_toggle():
-    """Adds the card to the account's saved list, or removes it if it's already
-    there. Returns {"saved": true|false} for the button to update itself."""
+    """Adds the card (in the given printing) to the account's saved list, or removes
+    it if it's already there. Returns {"saved": true|false} for the button."""
     product_id = _int_or_none(request.form.get("product_id"))
     if not product_id:
         return jsonify(error="Missing product_id"), 400
+    printing = request.form.get("printing", "").strip()
     user = _current_user()
-    if saved.is_saved(user, product_id):
-        saved.remove(user, product_id)
+    if saved.is_saved(user, product_id, printing):
+        saved.remove(user, product_id, printing)
         return jsonify(saved=False)
     saved.add(user, {
         "product_id": product_id,
@@ -257,7 +258,7 @@ def saved_toggle():
         "rarity": request.form.get("rarity", ""),
         "set_id": _int_or_none(request.form.get("set_id")),
         "market_price": _float_or_none(request.form.get("market_price")),
-        "printing": request.form.get("printing", "").strip(),
+        "printing": printing,
         "language": tcg_scraper.resolve_language(request.form.get("language", "")),
     })
     return jsonify(saved=True)
@@ -383,7 +384,8 @@ def search():
     c = result["candidate"]
     return redirect(url_for(
         "card_detail", product_id=c["product_id"], name=c["name"], set_name=c["set_name"],
-        card_number=c["number"], printing=printing, language=language, rarity=c["rarity"],
+        card_number=c["number"], printing=c.get("matched_printing") or printing,
+        language=language, rarity=c["rarity"],
         market_price=c["market_price"], set_id=c["set_id"], note=result.get("note")))
 
 
@@ -415,7 +417,7 @@ def card_detail(product_id):
         language=language,
         initial_tab=source,
         tcg_panel_url=tcg_panel_url,
-        **_save_vars(candidate),
+        **_save_vars(candidate, printing),
         **_ebay_shell(candidate, language, printing),
     )
 

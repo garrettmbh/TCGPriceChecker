@@ -46,7 +46,7 @@
           <img src="{{ c.image_url }}" alt="{{ c.name }}" onerror="this.style.visibility='hidden'">
           <div class="info">
             <div class="name">{{ c.name }}{% if c.number %} — #{{ c.number }}{% endif %}</div>
-            <div class="set">{{ c.set_name }}{% if c.set_release %} ({{ c.set_release }}){% endif %}{% if c.rarity %} · {{ c.rarity }}{% endif %}</div>
+            <div class="set">{{ c.set_name }}{% if c.set_release %} ({{ c.set_release }}){% endif %}{% if c.rarity %} · {{ c.rarity }}{% endif %}{% if c.printing %} · {{ c.printing|replace('|', ' / ') }}{% endif %}</div>
             <div class="saved-date">Saved <time class="saved-time" datetime="{{ c.saved_at }}">{{ c.saved_date }}</time></div>
           </div>
           <div class="price" {% if c.market_price %}title="TCGPlayer market price ${{ '%.2f'|format(c.market_price) }} USD (when saved), converted to CAD plus 8.75% tax"{% endif %}>
