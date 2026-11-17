@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import requests
+import threading
 import time
 import unicodedata
 from urllib.parse import urlencode, quote_plus
@@ -229,6 +230,30 @@ def _session():
     return s
  
  
+# A primed session costs a round trip to tcgplayer.com's homepage, so card-page
+# lookups reuse one for a few minutes instead of priming two per page view.
+# TCG_SESSION_TTL_SECONDS=0 turns this off (a fresh session every time).
+SHARED_SESSION_TTL_SECONDS = int(os.environ.get("TCG_SESSION_TTL_SECONDS", "600"))
+_shared = {"session": None, "ts": 0.0}
+_shared_lock = threading.Lock()
+
+
+def _shared_session():
+    if SHARED_SESSION_TTL_SECONDS <= 0:
+        return _session()
+    with _shared_lock:
+        if _shared["session"] is None or (time.time() - _shared["ts"]) > SHARED_SESSION_TTL_SECONDS:
+            _shared["session"] = _session()
+            _shared["ts"] = time.time()
+        return _shared["session"]
+
+
+def _reset_shared_session():
+    """Forget the shared session (called after a failed lookup, so the next one starts clean)."""
+    with _shared_lock:
+        _shared["session"] = None
+
+
 def build_query(name, set_name=None, card_number=None):
     """Combine the description fields into one search string."""
     parts = [name]
@@ -855,7 +880,8 @@ def _store_printings(product_id, printings, allow_empty=False):
         _printings_cache[product_id] = {"printings": sorted(set(printings)), "ts": time.time()}
  
  
-def get_current_listings(product_id, printing_filter=None, language=DEFAULT_LANGUAGE):
+def get_current_listings(product_id, printing_filter=None, language=DEFAULT_LANGUAGE,
+                         session=None):
     """
     Fetch current live listings for a product, grouped by condition, with
     the lowest total (price + shipping) per condition.
@@ -891,7 +917,7 @@ def get_current_listings(product_id, printing_filter=None, language=DEFAULT_LANG
         "sort": {"field": "price+shipping", "order": "asc"},
         "context": {"cart": {"packages": {}}, "shippingCountry": "US"},
     }
-    s = _session()
+    s = session or _session()
  
     def fetch_page(page, with_printing):
         payload = json.loads(json.dumps(base_payload))
@@ -1022,7 +1048,7 @@ def _log_dropped_sale(reason, sale):
  
  
 def get_latest_sales(product_id, printing_filter=None, limit_per_condition=15,
-                     language=DEFAULT_LANGUAGE):
+                     language=DEFAULT_LANGUAGE, session=None):
     """
     Fetch recent completed sales for a product, grouped by condition.
  
@@ -1039,7 +1065,7 @@ def get_latest_sales(product_id, printing_filter=None, limit_per_condition=15,
     url = LATEST_SALES_URL.format(product_id=product_id)
     lang = resolve_language(language)
     wanted = LANGUAGE_SETTINGS[lang]["listing_language"]
-    s = _session()
+    s = session or _session()
     variant_ids = [PRINTING_VARIANT_IDS[n] for n in _printing_names(printing_filter)
                    if n in PRINTING_VARIANT_IDS]
     # No "languages" filter in the request: it takes numeric ids, and the
@@ -1147,14 +1173,24 @@ def lookup_card(name, set_name=None, card_number=None, printing_filter=None,
 def get_card_details(candidate, printing_filter=None, language=DEFAULT_LANGUAGE):
     """Given one candidate dict (from search_products), fetch listings + sales."""
     product_id = candidate["product_id"]
-    listings_result = get_current_listings(product_id, printing_filter=printing_filter,
-                                           language=language)
-    sales = get_latest_sales(product_id, printing_filter=printing_filter, language=language)
+    s = _shared_session()
+    # The two requests don't depend on each other, so run them side by side.
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_listings = pool.submit(get_current_listings, product_id, printing_filter,
+                                     language, s)
+            f_sales = pool.submit(get_latest_sales, product_id, printing_filter,
+                                  language=language, session=s)
+            listings_result = f_listings.result()
+            sales = f_sales.result()
+    except Exception:
+        _reset_shared_session()  # don't keep reusing a session that just failed
+        raise
     available = listings_result["available_printings"]
     if not available:
         # No listings to learn printings from: use TCGPlayer's catalog.
         try:
-            available = sorted(get_catalog_printings(candidate, language))
+            available = sorted(get_catalog_printings(candidate, language, s))
         except Exception as e:
             log.warning("Catalog printings lookup failed for %s: %s", product_id, e)
             # No listings and no catalog answer: attach the printing that was selected.

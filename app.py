@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 
 from flask import Flask, jsonify, render_template, request, redirect, url_for, session
 import ebay
+import price_tracker
 import pricing
 import saved
 import tcg_scraper
@@ -54,6 +55,10 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 # Northflank serves this over HTTPS, so the cookie should require it there.
 # For local http:// testing with auth enabled, set SESSION_COOKIE_SECURE=0.
 app.config["SESSION_COOKIE_SECURE"] = os.environ.get("SESSION_COOKIE_SECURE", "1") != "0"
+
+# Background thread: re-checks every saved card's lowest listings every 8 hours
+# (see price_tracker.py). Set PRICE_TRACKER_ENABLED=0 to turn it off.
+price_tracker.start()
 
 
 def _auth_enabled():
@@ -250,7 +255,7 @@ def saved_toggle():
     if saved.is_saved(user, product_id, printing):
         saved.remove(user, product_id, printing)
         return jsonify(saved=False)
-    saved.add(user, {
+    card = {
         "product_id": product_id,
         "name": request.form.get("name", ""),
         "set_name": request.form.get("set_name", ""),
@@ -260,19 +265,33 @@ def saved_toggle():
         "market_price": _float_or_none(request.form.get("market_price")),
         "printing": printing,
         "language": tcg_scraper.resolve_language(request.form.get("language", "")),
-    })
+    }
+    saved.add(user, card)
+    price_tracker.snapshot_async(card)  # so its prices show on the account page right away
     return jsonify(saved=True)
 
 
 @app.route("/account", methods=["GET"])
 def account():
     rows = saved.list_cards(_current_user())
+    latest = saved.latest_prices()          # newest stored lowest listings per saved card
+    rate = pricing.get_usd_to_cad_rate()
     candidates = []
     for r in rows:
         try:
             saved_dt = datetime.fromisoformat(r["saved_at"])
         except ValueError:
             saved_dt = datetime.now(timezone.utc)
+        # Lowest stored listing per condition, shown as Total (CAD x NY tax), like the results page.
+        snap = latest.get((r["product_id"], r["printing"], r["language"]))
+        price_rows = []
+        for cond in tcg_scraper.CONDITION_ORDER:
+            usd = snap["conditions"].get(cond) if snap else None
+            price_rows.append({
+                "name": cond,
+                "css": "cond-" + cond.lower().replace(" ", "-"),
+                "total": pricing.usd_to_totals(usd, rate)["total"] if usd else None,
+            })
         candidates.append({
             "product_id": r["product_id"],
             "name": r["name"],
@@ -287,6 +306,9 @@ def account():
             "saved_ts": int(saved_dt.timestamp()),
             "saved_date": saved_dt.date().isoformat(),
             "image_url": f"https://tcgplayer-cdn.tcgplayer.com/product/{r['product_id']}_200w.jpg",
+            "price_rows": price_rows,
+            "near_mint_total": price_rows[0]["total"],   # the sort key (Near Mint is first)
+            "prices_checked_at": snap["checked_at"] if snap else None,
         })
     # Release dates are looked up per language (English and Japanese sets are
     # separate TCGPlayer categories).
