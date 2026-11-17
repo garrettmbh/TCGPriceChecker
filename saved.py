@@ -15,7 +15,7 @@ import os
 import sqlite3
 import threading
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 DATABASE_URL = (os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URI") or "").strip()
 USE_POSTGRES = bool(DATABASE_URL)
@@ -46,6 +46,22 @@ _COLUMNS = """
     PRIMARY KEY (username, product_id, printing)
 """
 _SCHEMA = f"CREATE TABLE IF NOT EXISTS saved_cards ({_COLUMNS})"
+
+# One row per card/printing/language/condition per price check. lowest_total is
+# USD (price + shipping) and NULL when that condition had no listing.
+_HISTORY_SCHEMA = """CREATE TABLE IF NOT EXISTS price_history (
+    product_id   INTEGER NOT NULL,
+    printing     TEXT    NOT NULL DEFAULT '',
+    language     TEXT    NOT NULL DEFAULT 'en',
+    checked_at   TEXT    NOT NULL,
+    cond         TEXT    NOT NULL,
+    lowest_total DOUBLE PRECISION,
+    price        DOUBLE PRECISION,
+    shipping     DOUBLE PRECISION,
+    PRIMARY KEY (product_id, printing, language, checked_at, cond)
+)"""
+_HISTORY_INDEX = "CREATE INDEX IF NOT EXISTS price_history_time ON price_history (checked_at)"
+_STATE_SCHEMA = "CREATE TABLE IF NOT EXISTS tracker_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
 
 _COPY_COLUMNS = ("username, product_id, name, set_name, number, rarity, set_id, "
                  "market_price, printing, language, saved_at")
@@ -95,6 +111,9 @@ def _connect():
         with _init_lock:
             if not _initialized:
                 _execute(conn, _SCHEMA)
+                _execute(conn, _HISTORY_SCHEMA)
+                _execute(conn, _HISTORY_INDEX)
+                _execute(conn, _STATE_SCHEMA)
                 conn.commit()
                 _migrate_primary_key(conn)
                 _initialized = True
@@ -158,3 +177,75 @@ def list_cards(username):
             "ORDER BY saved_at DESC, product_id DESC, printing",
             (username,)).fetchall()
     return [dict(r) for r in rows]
+
+
+# --- price history ------------------------------------------------------------
+
+def tracked_cards():
+    """Every distinct (product, printing, language) saved by any account."""
+    with closing(_connect()) as conn:
+        rows = _execute(conn, "SELECT DISTINCT product_id, printing, language FROM saved_cards").fetchall()
+    return [dict(r) for r in rows]
+
+
+def record_prices(product_id, printing, language, checked_at, rows):
+    """rows: [(condition, lowest_total, price, shipping), ...]; None values = no listing."""
+    with closing(_connect()) as conn:
+        for cond, total, price, shipping in rows:
+            _execute(
+                conn,
+                f"""INSERT INTO price_history
+                    (product_id, printing, language, checked_at, cond, lowest_total, price, shipping)
+                    VALUES ({', '.join([_PH] * 8)})
+                    ON CONFLICT (product_id, printing, language, checked_at, cond) DO NOTHING""",
+                (int(product_id), _norm_printing(printing), language or "en",
+                 checked_at, cond, total, price, shipping))
+        conn.commit()
+
+
+def latest_prices():
+    """{(product_id, printing, language): {"checked_at": str, "conditions": {cond: usd_total or None}}}"""
+    sql = """SELECT h.product_id, h.printing, h.language, h.checked_at, h.cond, h.lowest_total
+             FROM price_history h
+             JOIN (SELECT product_id, printing, language, MAX(checked_at) AS m
+                   FROM price_history GROUP BY product_id, printing, language) l
+               ON h.product_id = l.product_id AND h.printing = l.printing
+              AND h.language = l.language AND h.checked_at = l.m"""
+    out = {}
+    with closing(_connect()) as conn:
+        for r in _execute(conn, sql).fetchall():
+            key = (r["product_id"], r["printing"], r["language"])
+            entry = out.setdefault(key, {"checked_at": r["checked_at"], "conditions": {}})
+            entry["conditions"][r["cond"]] = r["lowest_total"]
+    return out
+
+
+def claim_run(min_interval_seconds):
+    """True for exactly one caller per interval, even across gunicorn workers."""
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat(timespec="seconds")
+    cutoff = (now - timedelta(seconds=min_interval_seconds)).isoformat(timespec="seconds")
+    with closing(_connect()) as conn:
+        _execute(conn, f"INSERT INTO tracker_state (key, value) VALUES ('last_run', {_PH}) "
+                       "ON CONFLICT (key) DO NOTHING", ("1970-01-01T00:00:00+00:00",))
+        cur = _execute(conn, f"UPDATE tracker_state SET value = {_PH} "
+                             f"WHERE key = 'last_run' AND value <= {_PH}", (stamp, cutoff))
+        conn.commit()
+        return cur.rowcount == 1
+
+
+def prune_history(max_rows):
+    """Keep at most max_rows; deletes the oldest check times first. 0 = keep everything."""
+    if not max_rows:
+        return 0
+    with closing(_connect()) as conn:
+        n = _execute(conn, "SELECT COUNT(*) AS n FROM price_history").fetchone()["n"]
+        excess = n - int(max_rows)
+        if excess <= 0:
+            return 0
+        cutoff = _execute(
+            conn, f"SELECT checked_at FROM price_history ORDER BY checked_at LIMIT 1 OFFSET {int(excess) - 1}"
+        ).fetchone()["checked_at"]
+        _execute(conn, f"DELETE FROM price_history WHERE checked_at <= {_PH}", (cutoff,))
+        conn.commit()
+        return excess

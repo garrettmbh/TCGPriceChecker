@@ -8,6 +8,14 @@
   <style>
     .saved-date { font-size: .85em; opacity: .7; margin-top: 2px; }
     .empty-saved { margin-top: 24px; opacity: .8; }
+    .cond-near-mint { color: #1377BB; }
+    .cond-lightly-played { color: #0EAD72; }
+    .cond-moderately-played { color: #99921B; }
+    .cond-heavily-played { color: #CB5A35; }
+    .cond-damaged { color: #C20009; }
+    .cond-prices { flex: none; font-size: .85em; line-height: 1.5; white-space: nowrap; }
+    .cond-row { display: flex; justify-content: space-between; gap: 12px; }
+    .cond-asof { font-size: .75em; opacity: .6; margin-top: 2px; text-align: right; }
   </style>
 </head>
 <body>
@@ -27,8 +35,8 @@
       <select id="sort">
         <option value="date-desc">Date added: newest first</option>
         <option value="date-asc">Date added: oldest first</option>
-        <option value="price-desc">Market price: high to low</option>
-        <option value="price-asc">Market price: low to high</option>
+        <option value="price-desc">Near Mint price: high to low</option>
+        <option value="price-asc">Near Mint price: low to high</option>
         <option value="set-asc">Set order: oldest first</option>
         <option value="set-desc">Set order: newest first</option>
       </select>
@@ -37,7 +45,7 @@
     <div class="candidate-list">
       {% for c in candidates %}
         <a class="candidate"
-           data-price="{{ c.market_total if c.market_total else '' }}"
+           data-price="{{ c.near_mint_total if c.near_mint_total else '' }}"
            data-release="{{ c.set_release_ord if c.set_release_ord is not none else '' }}"
            data-set="{{ c.set_id if c.set_id is not none else '' }}"
            data-number="{{ c.number }}"
@@ -49,8 +57,16 @@
             <div class="set">{{ c.set_name }}{% if c.set_release %} ({{ c.set_release }}){% endif %}{% if c.rarity %} · {{ c.rarity }}{% endif %}{% if c.printing %} · {{ c.printing|replace('|', ' / ') }}{% endif %}</div>
             <div class="saved-date">Saved <time class="saved-time" datetime="{{ c.saved_at }}">{{ c.saved_date }}</time></div>
           </div>
-          <div class="price" {% if c.market_price %}title="TCGPlayer market price ${{ '%.2f'|format(c.market_price) }} USD (when saved), converted to CAD plus 8.75% tax"{% endif %}>
-            {% if c.market_total %}${{ "{:,.2f}".format(c.market_total) }}{% else %}&mdash;{% endif %}
+          <div class="cond-prices">
+            {% for p in c.price_rows %}
+              <div class="cond-row">
+                <span class="{{ p.css }}">{{ p.name }}</span>
+                <span>{% if p.total %}${{ "{:,.2f}".format(p.total) }}{% else %}&mdash;{% endif %}</span>
+              </div>
+            {% endfor %}
+            <div class="cond-asof">
+              {% if c.prices_checked_at %}as of <time class="asof-time" datetime="{{ c.prices_checked_at }}">{{ c.prices_checked_at[:10] }}</time>{% else %}not checked yet{% endif %}
+            </div>
           </div>
         </a>
       {% endfor %}
@@ -62,6 +78,11 @@
         document.querySelectorAll(".saved-time").forEach(function (t) {
           var d = new Date(t.getAttribute("datetime"));
           if (!isNaN(d)) t.textContent = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+        });
+
+        document.querySelectorAll(".asof-time").forEach(function (t) {
+          var d = new Date(t.getAttribute("datetime"));
+          if (!isNaN(d)) t.textContent = d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
         });
 
         // Sorts in the browser, so changing the order is instant.
